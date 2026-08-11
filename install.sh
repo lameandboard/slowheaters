@@ -232,6 +232,12 @@ SENSOR_REFERENCE_KEYS = (
     "sensor_name",
     "sensor_section",
 )
+SLOW_HEATER_OPTION_KEYS = {
+    "refresh_time",
+    "max_mcu_duration",
+    "sensor_timeout",
+    "schedule_lead_time",
+}
 
 defaults = [
     ("refresh_time", "1.0"),
@@ -437,6 +443,15 @@ for section in all_sections:
         confidence_level = update_confidence(confidence_level, "high")
         reasons.append(f"heater sensor_type is known slow sensor '{direct_sensor_type}'")
         linked_sensor = f"sensor_type={direct_sensor_type}"
+
+    if kind == "heater_generic":
+        slow_option_keys = sorted(set(options).intersection(SLOW_HEATER_OPTION_KEYS))
+        if slow_option_keys:
+            confidence_level = update_confidence(confidence_level, "high")
+            reasons.append(
+                "heater_generic already contains slow_heater-only option(s): "
+                + ", ".join(slow_option_keys)
+            )
 
     heater_text = " ".join([str(section["header"]), name])
     for token, token_confidence in collect_token_matches(heater_text):

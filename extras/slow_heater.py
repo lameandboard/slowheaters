@@ -176,12 +176,14 @@ class SlowHeater(heaters.Heater):
         sensor_age = max(0.0, print_time - self.last_temp_time)
 
         status.update({
+            'slow_heater_active': True,
             'requested_power': self.requested_pwm,
             'refreshed_power': self.last_refresh_pwm,
             'sensor_age': round(sensor_age, 3),
             'refresh_time': self.refresh_time,
             'max_mcu_duration': self.max_mcu_duration,
             'sensor_timeout': self.sensor_timeout,
+            'schedule_lead_time': self.schedule_lead_time,
         })
         return status
 
