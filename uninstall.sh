@@ -95,12 +95,35 @@ done
 
 [[ -f "${KLIPPER_CONFIG}" ]] || fail "Klipper config not found: ${KLIPPER_CONFIG}"
 
-mapfile -t BACKUP_FILES < <(find "${BACKUPS_DIR}" -maxdepth 1 -type f -name 'vivid_sections_*.json' | sort)
-if [[ "${#BACKUP_FILES[@]}" -eq 0 ]]; then
-    fail "No Vivid section backups were found in ${BACKUPS_DIR}"
-fi
+LATEST_BACKUP="$(
+    python3 - "${BACKUPS_DIR}" <<'PY'
+from __future__ import annotations
 
-LATEST_BACKUP="${BACKUP_FILES[-1]}"
+import re
+import sys
+from pathlib import Path
+
+backups_dir = Path(sys.argv[1]).expanduser().resolve()
+files = list(backups_dir.glob("slow_heater_sections_*.json")) + list(backups_dir.glob("vivid_sections_*.json"))
+if not files:
+    raise SystemExit(0)
+
+timestamp_re = re.compile(r"_(\d{8}_\d{6})\.json$")
+
+
+def sort_key(path: Path) -> tuple[str, float, str]:
+    match = timestamp_re.search(path.name)
+    timestamp = match.group(1) if match else ""
+    return (timestamp, path.stat().st_mtime, path.name)
+
+
+print(sorted(files, key=sort_key)[-1])
+PY
+)" || fail "Failed to evaluate backup files in ${BACKUPS_DIR}"
+
+if [[ -z "${LATEST_BACKUP}" ]]; then
+    fail "No slow_heater section backups were found in ${BACKUPS_DIR}"
+fi
 
 info "Using Klipper config: ${KLIPPER_CONFIG}"
 info "Using Klipper extras: ${KLIPPER_EXTRAS_DIR}"

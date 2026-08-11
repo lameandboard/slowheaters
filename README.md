@@ -19,7 +19,7 @@
    - known slow sensor type matches (`aht10`, `aht20`, `aht3x`)
    - name/reference heuristics (`aht`, `vivid`, `dryer`, `chamber`)
 4. Reports candidate heater sections with confidence and reason(s)
-5. In apply mode, backs up converted sections to `backups/vivid_sections_YYYYMMDD_HHMMSS.json`
+5. In apply mode, backs up converted sections to `backups/slow_heater_sections_YYYYMMDD_HHMMSS.json`
 6. Converts selected `[heater_generic ...]` sections to `[slow_heater ...]`
 7. Adds default slow-heater settings when missing:
    - `refresh_time: 1.0`

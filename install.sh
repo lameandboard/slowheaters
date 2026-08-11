@@ -118,12 +118,16 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "${INTERACTIVE_MODE}" -eq 1 ]] && [[ ! -t 0 ]]; then
+if [[ "${INTERACTIVE_MODE}" -eq 1 ]] && [[ "${DISCOVER_ONLY}" -eq 0 ]] && [[ ! -t 0 ]]; then
     fail "--interactive requires a TTY"
 fi
 
 if [[ "${DISCOVER_ONLY}" -eq 1 ]] && [[ "${APPLY_ALL}" -eq 1 ]]; then
     warn "--all has no effect with --discover"
+fi
+
+if [[ "${DISCOVER_ONLY}" -eq 1 ]] && [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
+    warn "--interactive has no effect with --discover"
 fi
 
 [[ -f "${REPO_MODULE}" ]] || fail "Module not found: ${REPO_MODULE}"
@@ -143,8 +147,9 @@ info "Validated Python syntax: ${REPO_MODULE}"
 run_config_scan() {
     local action="$1"
     local apply_policy="$2"
+    local report_mode="${3:-full}"
 
-    python3 - "${KLIPPER_CONFIG}" "${BACKUPS_DIR}" "${action}" "${apply_policy}" <<'PY'
+    python3 - "${KLIPPER_CONFIG}" "${BACKUPS_DIR}" "${action}" "${apply_policy}" "${report_mode}" <<'PY'
 from __future__ import annotations
 
 import glob
@@ -159,6 +164,7 @@ root_config = Path(sys.argv[1]).expanduser().resolve()
 backups_dir = Path(sys.argv[2]).expanduser().resolve()
 action = sys.argv[3]
 apply_policy = sys.argv[4]
+report_mode = sys.argv[5]
 
 include_re = re.compile(r"^\[include\s+(.+?)\]\s*$", re.IGNORECASE)
 section_re = re.compile(r"^\[(.+?)\]\s*$")
@@ -435,30 +441,35 @@ candidate_heaters.sort(
     )
 )
 
-print("[INFO] Slow sensor discovery report")
 if not candidate_heaters:
     print("[INFO] No slow-sensor heater candidates were found in the Klipper config tree")
     raise SystemExit(0)
 
-for heater in candidate_heaters:
-    path = heater["path"]
-    kind = heater["kind"]
-    name = heater["name"]
-    linked_sensor = heater["linked_sensor"] if heater["linked_sensor"] else "n/a"
-    print(
-        "[INFO] Candidate: "
-        f"file={path} section=[{kind} {name}] current_kind={kind} "
-        f"linked_sensor={linked_sensor} confidence={heater['confidence']}"
-    )
-    for reason in heater["reasons"]:
-        print(f"[INFO]   reason: {reason}")
+if report_mode == "full":
+    print("[INFO] Slow sensor discovery report")
+    for heater in candidate_heaters:
+        path = heater["path"]
+        kind = heater["kind"]
+        name = heater["name"]
+        linked_sensor = heater["linked_sensor"] if heater["linked_sensor"] else "n/a"
+        print(
+            "[INFO] Candidate: "
+            f"file={path} heater_section={name} current_kind={kind} "
+            f"linked_sensor={linked_sensor} confidence={heater['confidence']}"
+        )
+        for reason in heater["reasons"]:
+            print(f"[INFO]   reason: {reason}")
 
-threshold = 1 if apply_policy == "all" else 3
+threshold = (
+    CONFIDENCE_LEVEL["low"]
+    if apply_policy == "all"
+    else CONFIDENCE_LEVEL["high"]
+)
 eligible = [
     heater for heater in candidate_heaters
     if heater["kind"] == "heater_generic" and int(heater["confidence_level"]) >= threshold
 ]
-skipped_low_confidence = [
+below_threshold_candidates = [
     heater for heater in candidate_heaters
     if heater["kind"] == "heater_generic" and int(heater["confidence_level"]) < threshold
 ]
@@ -467,12 +478,12 @@ existing_slow = [heater for heater in candidate_heaters if heater["kind"] == "sl
 print(
     "[INFO] Discovery summary: "
     f"eligible_conversions={len(eligible)} existing_slow={len(existing_slow)} "
-    f"below_threshold={len(skipped_low_confidence)} apply_policy={apply_policy}"
+    f"below_threshold={len(below_threshold_candidates)} apply_policy={apply_policy}"
 )
 
 if action == "discover":
-    if skipped_low_confidence and apply_policy != "all":
-        print("[WARN] Some low-confidence heater_generic candidates were not marked eligible by the current apply policy")
+    if below_threshold_candidates and apply_policy != "all":
+        print("[WARN] Some below-threshold heater_generic candidates were not marked eligible by the current apply policy")
         print("[WARN] Use --interactive --all after reviewing the report if you want to include them")
     raise SystemExit(0)
 
@@ -493,7 +504,7 @@ for heater in candidate_heaters:
     should_update = False
     if kind == "slow_heater":
         should_update = True
-    elif kind == "heater_generic" and heater in eligible:
+    elif kind == "heater_generic" and int(heater["confidence_level"]) >= threshold:
         should_update = True
 
     if not should_update:
@@ -533,7 +544,7 @@ for path, replacements in per_file.items():
 backup_path = None
 if backup_sections:
     backups_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backups_dir / f"vivid_sections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+    backup_path = backups_dir / f"slow_heater_sections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
     backup_path.write_text(
         json.dumps(
             {
@@ -555,8 +566,8 @@ if defaults_added:
     print(f"[INFO] Added {defaults_added} missing slow_heater default setting(s)")
 if backup_path is not None:
     print(f"[INFO] Backed up original converted sections to {backup_path}")
-if skipped_low_confidence and apply_policy != "all":
-    print("[WARN] Skipped low-confidence heater_generic candidates under default apply policy")
+if below_threshold_candidates and apply_policy != "all":
+    print("[WARN] Skipped below-threshold heater_generic candidates under default apply policy")
     print("[WARN] Re-run with --interactive --all after review if you want to convert them")
 if not per_file:
     print("[INFO] Config already matched the expected slow_heater layout for the selected candidates")
@@ -570,14 +581,14 @@ fi
 
 if [[ "${DISCOVER_ONLY}" -eq 1 ]]; then
     info "Running discovery-only scan"
-    run_config_scan discover "${APPLY_POLICY}"
+    run_config_scan discover "${APPLY_POLICY}" full
     info "Discovery complete (no changes made)"
     exit 0
 fi
 
 if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
     info "Running discovery scan before interactive prompt"
-    run_config_scan discover "${APPLY_POLICY}"
+    run_config_scan discover "${APPLY_POLICY}" full
 
     if [[ "${APPLY_ALL}" -eq 1 ]]; then
         prompt_message="Apply all discovered conversions (including low confidence)? [y/N] "
@@ -601,7 +612,11 @@ mkdir -p "${BACKUPS_DIR}"
 cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/slow_heater.py"
 info "Copied module to ${KLIPPER_EXTRAS_DIR}/slow_heater.py"
 
-run_config_scan apply "${APPLY_POLICY}"
+if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
+    run_config_scan apply "${APPLY_POLICY}" summary
+else
+    run_config_scan apply "${APPLY_POLICY}" full
+fi
 
 restart_klipper || true
 info "Install complete"
