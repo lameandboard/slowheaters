@@ -12,14 +12,17 @@ KLIPPER_SERVICE="${KLIPPER_SERVICE:-klipper}"
 MOONRAKER_URL="${MOONRAKER_URL:-http://localhost:7125}"
 
 NO_RESTART=0
+DISCOVER_ONLY=0
+INTERACTIVE_MODE=0
+APPLY_ALL=0
 
 info() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 usage() {
-cat <<'EOF'
-Usage: bash install.sh [--no-restart]
+cat <<'EOF_HELP'
+Usage: bash install.sh [--discover] [--interactive] [--all] [--no-restart]
 
 Environment overrides:
   KLIPPER_CONFIG      Path to the root Klipper config (default: ~/printer_data/config/printer.cfg)
@@ -28,9 +31,18 @@ Environment overrides:
   MOONRAKER_URL       Moonraker base URL used for restart fallback (default: http://localhost:7125)
 
 Options:
+  --discover          Scan and report candidate heaters only (no config/module/restart changes)
+  --interactive       Show discovery report and prompt before applying conversion set
+  --all               Apply all discovered candidates non-interactively (includes low confidence)
   --no-restart        Do not restart Klipper after install
   -h, --help          Show this help message
-EOF
+
+Behavior summary:
+  - Default apply mode converts only high-confidence heater candidates.
+  - --all broadens apply mode to convert every discovered candidate.
+  - --interactive asks for confirmation before conversion.
+  - --discover never copies slow_heater.py, never edits config, never restarts.
+EOF_HELP
 }
 
 restart_klipper() {
@@ -83,6 +95,18 @@ while [[ $# -gt 0 ]]; do
             NO_RESTART=1
             shift
             ;;
+        --discover)
+            DISCOVER_ONLY=1
+            shift
+            ;;
+        --interactive)
+            INTERACTIVE_MODE=1
+            shift
+            ;;
+        --all)
+            APPLY_ALL=1
+            shift
+            ;;
         -h|--help)
             usage
             exit 0
@@ -94,9 +118,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ "${INTERACTIVE_MODE}" -eq 1 ]] && [[ ! -t 0 ]]; then
+    fail "--interactive requires a TTY"
+fi
+
+if [[ "${DISCOVER_ONLY}" -eq 1 ]] && [[ "${APPLY_ALL}" -eq 1 ]]; then
+    warn "--all has no effect with --discover"
+fi
+
 [[ -f "${REPO_MODULE}" ]] || fail "Module not found: ${REPO_MODULE}"
 [[ -f "${KLIPPER_CONFIG}" ]] || fail "Klipper config not found: ${KLIPPER_CONFIG}"
-[[ -d "${KLIPPER_EXTRAS_DIR}" ]] || fail "Klipper extras directory not found: ${KLIPPER_EXTRAS_DIR}"
+
+if [[ "${DISCOVER_ONLY}" -eq 0 ]]; then
+    [[ -d "${KLIPPER_EXTRAS_DIR}" ]] || fail "Klipper extras directory not found: ${KLIPPER_EXTRAS_DIR}"
+fi
 
 info "Using Klipper config: ${KLIPPER_CONFIG}"
 info "Using Klipper extras: ${KLIPPER_EXTRAS_DIR}"
@@ -105,11 +140,11 @@ info "Using Klipper service: ${KLIPPER_SERVICE}"
 python3 -m py_compile "${REPO_MODULE}"
 info "Validated Python syntax: ${REPO_MODULE}"
 
-mkdir -p "${BACKUPS_DIR}"
-cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/slow_heater.py"
-info "Copied module to ${KLIPPER_EXTRAS_DIR}/slow_heater.py"
+run_config_scan() {
+    local action="$1"
+    local apply_policy="$2"
 
-python3 - "${KLIPPER_CONFIG}" "${BACKUPS_DIR}" <<'PY'
+    python3 - "${KLIPPER_CONFIG}" "${BACKUPS_DIR}" "${action}" "${apply_policy}" <<'PY'
 from __future__ import annotations
 
 import glob
@@ -122,10 +157,26 @@ from pathlib import Path
 
 root_config = Path(sys.argv[1]).expanduser().resolve()
 backups_dir = Path(sys.argv[2]).expanduser().resolve()
+action = sys.argv[3]
+apply_policy = sys.argv[4]
 
 include_re = re.compile(r"^\[include\s+(.+?)\]\s*$", re.IGNORECASE)
 section_re = re.compile(r"^\[(.+?)\]\s*$")
-option_re = re.compile(r"^\s*([A-Za-z0-9_]+)\s*[:=]")
+option_re = re.compile(r"^\s*([A-Za-z0-9_]+)\s*[:=]\s*(.*?)\s*(?:#.*)?$")
+
+KNOWN_SLOW_SENSOR_TYPES = {"aht10", "aht20", "aht3x"}
+HEURISTIC_TOKENS = {
+    "aht": "medium",
+    "vivid": "medium",
+    "dryer": "medium",
+    "chamber": "low",
+}
+SENSOR_REFERENCE_KEYS = (
+    "sensor",
+    "temperature_sensor",
+    "sensor_name",
+    "sensor_section",
+)
 
 defaults = [
     ("refresh_time", "1.0"),
@@ -133,6 +184,9 @@ defaults = [
     ("sensor_timeout", "15.0"),
     ("schedule_lead_time", "0.100"),
 ]
+
+CONFIDENCE_LEVEL = {"none": 0, "low": 1, "medium": 2, "high": 3}
+CONFIDENCE_FROM_LEVEL = {value: key for key, value in CONFIDENCE_LEVEL.items()}
 
 
 def collect_config_paths(path: Path, seen: set[Path] | None = None) -> list[Path]:
@@ -145,7 +199,7 @@ def collect_config_paths(path: Path, seen: set[Path] | None = None) -> list[Path
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise SystemExit(f"Failed to read {path}: {exc}") from exc
+        raise SystemExit(f"[ERROR] Failed to read {path}: {exc}") from exc
     for line in lines:
         match = include_re.match(line.strip())
         if not match:
@@ -178,25 +232,95 @@ def parse_sections(lines: list[str]) -> list[dict[str, object]]:
     return sections
 
 
-def section_name(header: str) -> tuple[str, str] | tuple[None, None]:
+def split_header(header: str) -> tuple[str, str]:
     parts = header.split(None, 1)
-    if len(parts) != 2:
-        return None, None
-    kind, name = parts
-    if name.startswith("Vivid_") and kind in {"heater_generic", "slow_heater"}:
-        return kind, name
-    return None, None
+    if len(parts) == 1:
+        return parts[0].strip(), ""
+    return parts[0].strip(), parts[1].strip()
 
 
-def updated_section_text(lines: list[str], start: int, end: int, kind: str, name: str) -> tuple[str, list[str], bool]:
+def parse_options(lines: list[str], start: int, end: int) -> dict[str, str]:
+    options: dict[str, str] = {}
+    for line in lines[start + 1:end]:
+        match = option_re.match(line)
+        if not match:
+            continue
+        key = match.group(1).strip().lower()
+        value = match.group(2).strip()
+        options[key] = value
+    return options
+
+
+def update_confidence(current_level: int, requested: str) -> int:
+    return max(current_level, CONFIDENCE_LEVEL[requested])
+
+
+def collect_token_matches(text: str) -> list[tuple[str, str]]:
+    lowered = text.lower()
+    matches: list[tuple[str, str]] = []
+    for token, confidence in HEURISTIC_TOKENS.items():
+        if token in lowered:
+            matches.append((token, confidence))
+    return matches
+
+
+def section_slow_signal(section: dict[str, object]) -> dict[str, object]:
+    reasons: list[str] = []
+    confidence_level = 0
+
+    kind = str(section["kind"])
+    name = str(section["name"])
+    options = dict(section["options"])
+
+    if kind.lower() in KNOWN_SLOW_SENSOR_TYPES:
+        confidence_level = update_confidence(confidence_level, "high")
+        reasons.append(f"section type is known slow sensor '{kind}'")
+
+    for key, value in options.items():
+        normalized_value = value.strip().lower()
+        if normalized_value in KNOWN_SLOW_SENSOR_TYPES:
+            confidence_level = update_confidence(confidence_level, "high")
+            reasons.append(f"option '{key}' is known slow sensor type '{value.strip()}'")
+
+    searchable_text = " ".join([section["header"], kind, name] + [str(v) for v in options.values()])
+    for token, confidence in collect_token_matches(searchable_text):
+        confidence_level = update_confidence(confidence_level, confidence)
+        reasons.append(f"name/value contains token '{token}'")
+
+    return {
+        "confidence_level": confidence_level,
+        "confidence": CONFIDENCE_FROM_LEVEL[confidence_level],
+        "reasons": sorted(set(reasons)),
+    }
+
+
+def resolve_sensor_reference(reference: str, sections_by_header: dict[str, dict[str, object]], sections_by_name: dict[str, list[dict[str, object]]]) -> dict[str, object] | None:
+    cleaned = reference.strip()
+    if not cleaned:
+        return None
+    lowered = cleaned.lower()
+    if lowered in sections_by_header:
+        return sections_by_header[lowered]
+    matches = sections_by_name.get(lowered, [])
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def confidence_label_from_reasons(level: int) -> str:
+    return CONFIDENCE_FROM_LEVEL.get(level, "none")
+
+
+def section_output(lines: list[str], start: int, end: int, kind: str, name: str) -> tuple[str, list[str], bool, int]:
     original = "".join(lines[start:end])
     body = lines[start + 1:end]
-    keys = {
-        match.group(1)
+    original_keys = {
+        match.group(1).strip().lower()
         for line in body
         if (match := option_re.match(line))
     }
-    additions = [f"{key}: {value}\n" for key, value in defaults if key not in keys]
+    additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys]
+
     changed = False
     new_lines = [f"[slow_heater {name}]\n"] + body
     if kind != "slow_heater":
@@ -206,30 +330,150 @@ def updated_section_text(lines: list[str], start: int, end: int, kind: str, name
         if new_lines and new_lines[-1].strip():
             new_lines.append("\n")
         new_lines.extend(additions)
-    return original, new_lines, changed
+
+    return original, new_lines, changed, len(additions)
 
 
 config_paths = collect_config_paths(root_config)
-targets: list[dict[str, object]] = []
+
+all_sections: list[dict[str, object]] = []
+sections_by_header: dict[str, dict[str, object]] = {}
+sections_by_name: dict[str, list[dict[str, object]]] = defaultdict(list)
+
 for config_path in config_paths:
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
     for section in parse_sections(lines):
-        kind, name = section_name(section["header"])
-        if not kind:
-            continue
-        targets.append(
-            {
-                "path": config_path,
-                "lines": lines,
-                "kind": kind,
-                "name": name,
-                "start": int(section["start"]),
-                "end": int(section["end"]),
-            }
-        )
+        header = str(section["header"])
+        kind, name = split_header(header)
+        entry = {
+            "id": len(all_sections),
+            "path": config_path,
+            "lines": lines,
+            "header": header,
+            "kind": kind,
+            "name": name,
+            "start": int(section["start"]),
+            "end": int(section["end"]),
+        }
+        entry["options"] = parse_options(lines, int(section["start"]), int(section["end"]))
+        all_sections.append(entry)
+        sections_by_header[header.lower()] = entry
+        if name:
+            sections_by_name[name.lower()].append(entry)
 
-if not targets:
-    print("[INFO] No Vivid heater sections were found in the Klipper config tree")
+sensor_signals: dict[int, dict[str, object]] = {}
+for section in all_sections:
+    sensor_signals[int(section["id"])] = section_slow_signal(section)
+
+candidate_heaters: list[dict[str, object]] = []
+for section in all_sections:
+    kind = str(section["kind"])
+    if kind not in {"heater_generic", "slow_heater"}:
+        continue
+
+    name = str(section["name"])
+    options = dict(section["options"])
+    confidence_level = 0
+    reasons: list[str] = []
+    linked_sensor = ""
+
+    direct_sensor_type = options.get("sensor_type", "").strip()
+    if direct_sensor_type and direct_sensor_type.lower() in KNOWN_SLOW_SENSOR_TYPES:
+        confidence_level = update_confidence(confidence_level, "high")
+        reasons.append(f"heater sensor_type is known slow sensor '{direct_sensor_type}'")
+        linked_sensor = f"sensor_type={direct_sensor_type}"
+
+    heater_text = " ".join([str(section["header"]), name])
+    for token, token_confidence in collect_token_matches(heater_text):
+        confidence_level = update_confidence(confidence_level, token_confidence)
+        reasons.append(f"heater name contains token '{token}'")
+
+    for key in SENSOR_REFERENCE_KEYS:
+        if key not in options:
+            continue
+        referenced = resolve_sensor_reference(options[key], sections_by_header, sections_by_name)
+        if referenced is None:
+            ref_value = options[key].strip()
+            for token, token_confidence in collect_token_matches(ref_value):
+                confidence_level = update_confidence(confidence_level, token_confidence)
+                reasons.append(f"sensor reference '{key}' contains token '{token}'")
+            continue
+
+        linked_sensor = referenced["header"]
+        ref_index = int(referenced["id"])
+        ref_signal = sensor_signals[ref_index]
+        ref_level = int(ref_signal["confidence_level"])
+        if ref_level > 0:
+            confidence_level = max(confidence_level, ref_level)
+            for reason in ref_signal["reasons"]:
+                reasons.append(f"{key} references [{referenced['header']}]: {reason}")
+
+    if confidence_level == 0:
+        continue
+
+    candidate_heaters.append(
+        {
+            "path": section["path"],
+            "kind": kind,
+            "name": name,
+            "header": section["header"],
+            "start": int(section["start"]),
+            "end": int(section["end"]),
+            "lines": section["lines"],
+            "linked_sensor": linked_sensor,
+            "confidence_level": confidence_level,
+            "confidence": confidence_label_from_reasons(confidence_level),
+            "reasons": sorted(set(reasons)),
+        }
+    )
+
+candidate_heaters.sort(
+    key=lambda item: (
+        -int(item["confidence_level"]),
+        str(item["path"]),
+        str(item["name"]),
+    )
+)
+
+print("[INFO] Slow sensor discovery report")
+if not candidate_heaters:
+    print("[INFO] No slow-sensor heater candidates were found in the Klipper config tree")
+    raise SystemExit(0)
+
+for heater in candidate_heaters:
+    path = heater["path"]
+    kind = heater["kind"]
+    name = heater["name"]
+    linked_sensor = heater["linked_sensor"] if heater["linked_sensor"] else "n/a"
+    print(
+        "[INFO] Candidate: "
+        f"file={path} section=[{kind} {name}] current_kind={kind} "
+        f"linked_sensor={linked_sensor} confidence={heater['confidence']}"
+    )
+    for reason in heater["reasons"]:
+        print(f"[INFO]   reason: {reason}")
+
+threshold = 1 if apply_policy == "all" else 3
+eligible = [
+    heater for heater in candidate_heaters
+    if heater["kind"] == "heater_generic" and int(heater["confidence_level"]) >= threshold
+]
+skipped_low_confidence = [
+    heater for heater in candidate_heaters
+    if heater["kind"] == "heater_generic" and int(heater["confidence_level"]) < threshold
+]
+existing_slow = [heater for heater in candidate_heaters if heater["kind"] == "slow_heater"]
+
+print(
+    "[INFO] Discovery summary: "
+    f"eligible_conversions={len(eligible)} existing_slow={len(existing_slow)} "
+    f"below_threshold={len(skipped_low_confidence)} apply_policy={apply_policy}"
+)
+
+if action == "discover":
+    if skipped_low_confidence and apply_policy != "all":
+        print("[WARN] Some low-confidence heater_generic candidates were not marked eligible by the current apply policy")
+        print("[WARN] Use --interactive --all after reviewing the report if you want to include them")
     raise SystemExit(0)
 
 per_file: dict[Path, list[dict[str, object]]] = defaultdict(list)
@@ -238,15 +482,25 @@ already_slow: list[tuple[str, Path]] = []
 backup_sections: list[dict[str, str]] = []
 defaults_added = 0
 
-for target in targets:
-    path = target["path"]
-    lines = target["lines"]
-    kind = str(target["kind"])
-    name = str(target["name"])
-    start = int(target["start"])
-    end = int(target["end"])
+for heater in candidate_heaters:
+    path = heater["path"]
+    lines = heater["lines"]
+    kind = str(heater["kind"])
+    name = str(heater["name"])
+    start = int(heater["start"])
+    end = int(heater["end"])
 
-    original, replacement, changed = updated_section_text(lines, start, end, kind, name)
+    should_update = False
+    if kind == "slow_heater":
+        should_update = True
+    elif kind == "heater_generic" and heater in eligible:
+        should_update = True
+
+    if not should_update:
+        continue
+
+    original, replacement, changed, added_count = section_output(lines, start, end, kind, name)
+
     if kind == "heater_generic":
         converted.append((name, path))
         backup_sections.append(
@@ -261,6 +515,7 @@ for target in targets:
         already_slow.append((name, path))
 
     if changed:
+        defaults_added += added_count
         per_file[path].append(
             {
                 "start": start,
@@ -268,13 +523,6 @@ for target in targets:
                 "replacement": replacement,
             }
         )
-        if any(f"{key}: {value}\n" in replacement for key, value in defaults):
-            original_keys = {
-                match.group(1)
-                for line in lines[start + 1:end]
-                if (match := option_re.match(line))
-            }
-            defaults_added += sum(1 for key, _ in defaults if key not in original_keys)
 
 for path, replacements in per_file.items():
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -298,7 +546,7 @@ if backup_sections:
         encoding="utf-8",
     )
 
-print("[INFO] Vivid heater scan complete")
+print("[INFO] Conversion run complete")
 for name, path in converted:
     print(f"[INFO] Converted [heater_generic {name}] -> [slow_heater {name}] in {path}")
 for name, path in already_slow:
@@ -306,10 +554,54 @@ for name, path in already_slow:
 if defaults_added:
     print(f"[INFO] Added {defaults_added} missing slow_heater default setting(s)")
 if backup_path is not None:
-    print(f"[INFO] Backed up original Vivid sections to {backup_path}")
+    print(f"[INFO] Backed up original converted sections to {backup_path}")
+if skipped_low_confidence and apply_policy != "all":
+    print("[WARN] Skipped low-confidence heater_generic candidates under default apply policy")
+    print("[WARN] Re-run with --interactive --all after review if you want to convert them")
 if not per_file:
-    print("[INFO] Config already matched the expected slow_heater layout")
+    print("[INFO] Config already matched the expected slow_heater layout for the selected candidates")
 PY
+}
+
+APPLY_POLICY="high"
+if [[ "${APPLY_ALL}" -eq 1 ]]; then
+    APPLY_POLICY="all"
+fi
+
+if [[ "${DISCOVER_ONLY}" -eq 1 ]]; then
+    info "Running discovery-only scan"
+    run_config_scan discover "${APPLY_POLICY}"
+    info "Discovery complete (no changes made)"
+    exit 0
+fi
+
+if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
+    info "Running discovery scan before interactive prompt"
+    run_config_scan discover "${APPLY_POLICY}"
+
+    if [[ "${APPLY_ALL}" -eq 1 ]]; then
+        prompt_message="Apply all discovered conversions (including low confidence)? [y/N] "
+    else
+        prompt_message="Apply high-confidence discovered conversions? [y/N] "
+    fi
+
+    read -r -p "[INFO] ${prompt_message}" confirm
+    case "${confirm}" in
+        y|Y|yes|YES)
+            info "User confirmed conversion"
+            ;;
+        *)
+            info "User declined conversion; exiting with no changes"
+            exit 0
+            ;;
+    esac
+fi
+
+mkdir -p "${BACKUPS_DIR}"
+cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/slow_heater.py"
+info "Copied module to ${KLIPPER_EXTRAS_DIR}/slow_heater.py"
+
+run_config_scan apply "${APPLY_POLICY}"
 
 restart_klipper || true
 info "Install complete"
