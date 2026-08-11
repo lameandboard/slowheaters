@@ -206,5 +206,21 @@ def load_config_prefix(config):
     # heater with a target temperature input widget.
     heater = SlowHeater(config, sensor)
     pheaters.heaters[heater_name] = heater
-    pheaters.available_heaters.append(config.get_name())
+
+    # Mainsail and Fluidd determine whether to show a target temperature input
+    # widget by checking whether the printer object name starts with "heater_"
+    # (or "extruder"/"temperature_fan").  Because our config section is named
+    # [slow_heater <name>], Klipper registers the object as "slow_heater <name>"
+    # which does not match that prefix, so the UI silently hides the target box.
+    #
+    # Fix: also register the same object under "heater_generic <name>" in the
+    # Klipper printer object namespace, and expose that alias in
+    # available_heaters.  Moonraker subscribes to "heater_generic <name>",
+    # receives the canonical {temperature, target, power} status fields, and
+    # the frontend correctly renders the target control.  SET_HEATER_TEMPERATURE
+    # and all other gcode remain unaffected because they key off heater_name
+    # (the bare name without prefix), not the full object name.
+    heater_generic_name = 'heater_generic %s' % (heater_name,)
+    printer.add_object(heater_generic_name, heater)
+    pheaters.available_heaters.append(heater_generic_name)
     return heater
