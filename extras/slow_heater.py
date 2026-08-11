@@ -177,27 +177,49 @@ class SlowHeater(heaters.Heater):
 
     def get_status(self, eventtime):
         # Start with Klipper's normal heater status.
-        status = super().get_status(eventtime)
+        # Guard against any exception inside super().get_status() (e.g. if
+        # the MCU or lock is not yet ready) so Moonraker always receives a
+        # well-formed dict rather than null values for all fields.
+        try:
+            status = super().get_status(eventtime)
+        except Exception:
+            status = {}
+
+        # Mainsail/Fluidd determine the allowed target range from the
+        # "temperature", "target", "power", "min_temp" and "max_temp" fields
+        # of the printer object they render ("heater_generic <name>").
+        # Klipper's base Heater.get_status() provides temperature/target/power,
+        # but NOT min_temp/max_temp.  Moonraker returns null for any key that
+        # is absent from the status dict, which causes the UI to clamp the
+        # target slider to 0.  Force all five fields to explicit numeric values
+        # so Moonraker always returns non-null for a printer/objects/query.
+        status['temperature'] = float(
+            status['temperature'] if status.get('temperature') is not None
+            else 0.0)
+        status['target'] = float(
+            status['target'] if status.get('target') is not None
+            else self.target_temp if self.target_temp is not None else 0.0)
+        status['power'] = float(
+            status['power'] if status.get('power') is not None
+            else self.last_pwm_value if self.last_pwm_value is not None else 0.0)
+        status['min_temp'] = float(self.min_temp)
+        status['max_temp'] = float(self.max_temp)
 
         # Extra debugging fields are harmless to Mainsail / macros and make
         # testing this experimental heater easier.
-        mcu = self.mcu_pwm.get_mcu()
-        print_time = mcu.estimated_print_time(eventtime)
-        sensor_age = max(0.0, print_time - self.last_temp_time)
+        # Compute sensor age defensively; MCU may not be ready at query time.
+        try:
+            mcu = self.mcu_pwm.get_mcu()
+            print_time = mcu.estimated_print_time(eventtime)
+            sensor_age = round(max(0.0, print_time - self.last_temp_time), 3)
+        except Exception:
+            sensor_age = 0.0
 
         status.update({
             'slow_heater_active': True,
-            # Expose temperature limits in status so Moonraker/Mainsail can
-            # read the correct min/max range for the heater control widget.
-            # Mainsail looks up limits via the printer object name
-            # ("heater_generic <name>"), but the Klipper configfile section is
-            # named "[slow_heater <name>]".  Without these fields the frontend
-            # falls back to max_temp=0 and refuses any positive target input.
-            'max_temp': self.max_temp,
-            'min_temp': self.min_temp,
             'requested_power': self.requested_pwm,
             'refreshed_power': self.last_refresh_pwm,
-            'sensor_age': round(sensor_age, 3),
+            'sensor_age': sensor_age,
             'refresh_time': self.refresh_time,
             'max_mcu_duration': self.max_mcu_duration,
             'sensor_timeout': self.sensor_timeout,

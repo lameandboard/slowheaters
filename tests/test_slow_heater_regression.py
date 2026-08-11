@@ -250,6 +250,81 @@ class SlowHeaterRegressionTests(unittest.TestCase):
         self.assertGreater(pwm, 0.0,
             "refresh must continue heating when last_temp < target_temp")
 
+    def test_moonraker_query_shape_all_fields_non_null(self):
+        # Regression test: replicates the exact Moonraker printer/objects/query
+        # shape that Mainsail uses.
+        #   curl ".../printer/objects/query?heater_generic%20vivid1_dryer=
+        #         min_temp,max_temp,temperature,target,power"
+        # All five fields must be present and numeric (non-None) so Moonraker
+        # returns non-null JSON and Mainsail's target slider accepts values
+        # above 0.
+        self.heater.min_temp = 0.0
+        self.heater.max_temp = 70.0
+        self.heater.target_temp = 40.0
+        self.heater.last_pwm_value = 0.5
+
+        status = self.heater.get_status(0.0)
+
+        moonraker_fields = ('temperature', 'target', 'power', 'min_temp',
+                            'max_temp')
+        for field in moonraker_fields:
+            self.assertIn(field, status,
+                "get_status() must return '%s' so Moonraker does not send "
+                "null to Mainsail" % field)
+            self.assertIsNotNone(status[field],
+                "get_status()['%s'] must not be None" % field)
+            self.assertIsInstance(status[field], float,
+                "get_status()['%s'] must be a float, got %r"
+                % (field, status[field]))
+
+        self.assertGreater(status['max_temp'], 0.0,
+            "max_temp must be > 0 so Mainsail allows positive target input")
+
+    def test_target_not_clamped_to_zero_when_limits_present(self):
+        # Guard against Mainsail clamping target to 0 because of missing
+        # min_temp/max_temp.  If max_temp is present and > 0 in get_status(),
+        # Mainsail will accept targets up to max_temp.  Verify that a non-zero
+        # target_temp is forwarded correctly alongside valid limits.
+        self.heater.min_temp = 0.0
+        self.heater.max_temp = 80.0
+        self.heater.target_temp = 55.0
+
+        status = self.heater.get_status(0.0)
+
+        self.assertEqual(status['max_temp'], 80.0,
+            "max_temp must equal configured max to prevent UI clamping")
+        self.assertEqual(status['target'], 55.0,
+            "target must reflect current target_temp (not clamped to 0)")
+        self.assertGreaterEqual(status['target'], 0.0)
+        self.assertLessEqual(status['target'], status['max_temp'])
+
+    def test_get_status_survives_mcu_not_ready(self):
+        # If get_status() is called before the MCU is fully initialised
+        # (e.g. during Moonraker's initial object subscription), the call to
+        # mcu_pwm.get_mcu().estimated_print_time() may raise.  Verify that
+        # all five Mainsail-critical fields are still returned with numeric
+        # values rather than allowing the exception to propagate and cause
+        # Moonraker to return null for every field.
+        def boom(_eventtime):
+            raise RuntimeError("MCU not ready")
+
+        self.heater.mcu_pwm.get_mcu = lambda: type(
+            'BadMCU', (), {'estimated_print_time': boom})()
+        self.heater.min_temp = 5.0
+        self.heater.max_temp = 90.0
+        self.heater.target_temp = 30.0
+
+        # Must not raise; must return dict with all required numeric fields.
+        status = self.heater.get_status(0.0)
+
+        for field in ('temperature', 'target', 'power', 'min_temp', 'max_temp'):
+            self.assertIn(field, status)
+            self.assertIsNotNone(status[field])
+            self.assertIsInstance(status[field], float)
+
+        self.assertEqual(status['min_temp'], 5.0)
+        self.assertEqual(status['max_temp'], 90.0)
+
 
 if __name__ == "__main__":
     unittest.main()
