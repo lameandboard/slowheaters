@@ -124,6 +124,11 @@ def load_module():
             self.max_power = 1.0
             self.last_pwm_value = 0.0
             self.last_temp_time = 0.0
+            # Klipper Heater sets these from config; expose them so SlowHeater
+            # can include them in get_status() for Mainsail temperature limits.
+            self.last_temp = 0.0
+            self.min_temp = 0.0
+            self.max_temp = 120.0
 
         def _handle_shutdown(self):
             return None
@@ -196,6 +201,54 @@ class SlowHeaterRegressionTests(unittest.TestCase):
         self.assertIn("heater_generic chamber", pheaters.available_heaters)
         status = heater.get_status(0.0)
         self.assertTrue(status["slow_heater_active"])
+
+    def test_status_exposes_temperature_limits_for_mainsail(self):
+        # Root cause of "max temp is 0" in Mainsail: the printer object is
+        # registered as "heater_generic <name>" but the Klipper configfile
+        # section is "[slow_heater <name>]".  Mainsail cannot find max_temp
+        # from the configfile for that alias, so it falls back to 0 and
+        # rejects any positive target.  SlowHeater.get_status() must expose
+        # max_temp and min_temp directly so Moonraker can forward them.
+        self.heater.max_temp = 80.0
+        self.heater.min_temp = 5.0
+
+        status = self.heater.get_status(0.0)
+
+        self.assertEqual(status["max_temp"], 80.0)
+        self.assertEqual(status["min_temp"], 5.0)
+
+    def test_refresh_cuts_pwm_when_temperature_at_or_above_target(self):
+        # Slow sensors update infrequently (every few seconds).  Without a
+        # temperature guard the refresh timer keeps sending the previous
+        # PID output for the full sensor-report interval even after the
+        # temperature has already reached the target, causing overshoot that
+        # can trip Klipper's max_temp shutdown ("temp too high").
+        self.heater._slow_ready = True
+        self.heater.target_temp = 50.0
+        self.heater.last_temp_time = 29.5
+        self.heater.requested_pwm = 0.8  # PID last said "heat more"
+        self.heater.last_temp = 50.0     # but sensor now reads at target
+
+        self.heater._refresh_event(30.0)
+
+        _pwm_time, pwm = self.heater.mcu_pwm.calls[-1]
+        self.assertEqual(pwm, 0.0,
+            "refresh must not keep heating when last_temp >= target_temp")
+
+    def test_refresh_heats_normally_when_temperature_below_target(self):
+        # Confirm the overshoot guard does NOT suppress heat when the
+        # temperature is still below target.
+        self.heater._slow_ready = True
+        self.heater.target_temp = 60.0
+        self.heater.last_temp_time = 29.5
+        self.heater.requested_pwm = 0.6
+        self.heater.last_temp = 40.0  # below target – heat should continue
+
+        self.heater._refresh_event(30.0)
+
+        _pwm_time, pwm = self.heater.mcu_pwm.calls[-1]
+        self.assertGreater(pwm, 0.0,
+            "refresh must continue heating when last_temp < target_temp")
 
 
 if __name__ == "__main__":
