@@ -70,6 +70,22 @@ Slow-heater settings:
 - `max_mcu_duration`: maximum watchdog-safe output duration scheduled on the MCU per refresh.
 - `sensor_timeout`: how old a sensor reading can be before `slow_heater` treats it as stale.
 - `schedule_lead_time`: small lead-time margin used when scheduling refreshes so updates land safely before deadlines.
+- Standard Klipper heater options like `max_power` still apply and are the preferred way to cap heater duty if you also want a slower ramp.
+
+## Mainsail / Fluidd behavior
+
+- `[slow_heater <name>]` is still the required config section for slow-sensor-safe control.
+- For UI compatibility, the same object is also published as `heater_generic <name>`, so Mainsail/Fluidd can show target controls.
+- This alias does **not** switch to regular heater behavior: control still goes through SlowHeater's independent refresh timer and stale-sensor cutoff.
+- Frontends usually show only standard heater fields (`temperature`, `target`, `power`). Slow-heater internals are available in Klipper status/output:
+  - `slow_heater_active`
+  - `requested_power`
+  - `refreshed_power`
+  - `sensor_age`
+  - `refresh_time`
+  - `max_mcu_duration`
+  - `sensor_timeout`
+  - `schedule_lead_time`
 
 ## Install
 
@@ -122,6 +138,11 @@ In interactive mode (`--interactive`), the report is shown first and you are pro
 
 Recommendation: always review the proposed conversions before applying, especially when heuristic/low-confidence matches are present.
 
+Migration/backward-compatibility note:
+
+- If a `[heater_generic ...]` section already contains slow-heater-only options (`refresh_time`, `max_mcu_duration`, `sensor_timeout`, `schedule_lead_time`), the installer now treats it as high-confidence and converts it to `[slow_heater ...]` automatically.
+- Existing `[slow_heater ...]` sections remain supported; installer runs continue to be idempotent and only add missing defaults.
+
 ## Uninstall
 
 ```bash
@@ -158,6 +179,12 @@ Validate the shell scripts:
 
 ```bash
 bash -n install.sh uninstall.sh
+```
+
+Run regression tests for slow-heater control semantics:
+
+```bash
+python3 -m unittest discover -s tests
 ```
 
 Recommended functional test:
