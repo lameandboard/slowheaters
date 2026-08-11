@@ -77,6 +77,7 @@ Slow-heater settings:
 - `[slow_heater <name>]` is still the required config section for slow-sensor-safe control.
 - For UI compatibility, the same object is also published as `heater_generic <name>`, so Mainsail/Fluidd can show target controls.
 - This alias does **not** switch to regular heater behavior: control still goes through SlowHeater's independent refresh timer and stale-sensor cutoff.
+- `get_status()` explicitly includes `max_temp` and `min_temp` so Moonraker can forward the correct temperature range to the frontend. Without this, Mainsail cannot find the limits from the configfile (because the config section is named `[slow_heater ...]`, not `[heater_generic ...]`) and falls back to **max_temp = 0**, blocking any positive target input.
 - Frontends usually show only standard heater fields (`temperature`, `target`, `power`). Slow-heater internals are available in Klipper status/output:
   - `slow_heater_active`
   - `requested_power`
@@ -86,6 +87,18 @@ Slow-heater settings:
   - `max_mcu_duration`
   - `sensor_timeout`
   - `schedule_lead_time`
+
+### Overshoot protection
+
+Slow sensors report temperature only every few seconds.  During that interval
+the refresh timer would otherwise keep replaying the last PID output even after
+the temperature has already reached the target, causing overshoot that can trip
+Klipper's `max_temp` shutdown ("temp too high").
+
+`slow_heater` guards against this: if `last_temp >= target_temp` at refresh
+time, PWM is cut to zero immediately.  PID resumes sending positive output via
+`set_pwm()` as soon as the sensor reports the temperature has dropped back below
+target.
 
 ## Install
 

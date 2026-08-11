@@ -158,6 +158,16 @@ class SlowHeater(heaters.Heater):
         if pwm_time <= self.last_refresh_print_time:
             pwm_time = self.last_refresh_print_time + 0.001
 
+        # Prevent sensor-lag overshoot: slow sensors may not report a rising
+        # temperature for several seconds.  If the last known reading is already
+        # at or above the target, stop refreshing heat immediately rather than
+        # continuing to blast the previous PID output.  Applied last so no
+        # subsequent logic can re-enable heat before the MCU write.  PID will
+        # resume sending positive PWM via set_pwm() once the sensor reports the
+        # temperature has dropped below target again.
+        if self.target_temp > 0.0 and self.last_temp >= self.target_temp:
+            pwm = 0.0
+
         self.mcu_pwm.set_pwm(pwm_time, pwm)
         self.last_refresh_print_time = pwm_time
         self.last_refresh_pwm = pwm
@@ -177,6 +187,14 @@ class SlowHeater(heaters.Heater):
 
         status.update({
             'slow_heater_active': True,
+            # Expose temperature limits in status so Moonraker/Mainsail can
+            # read the correct min/max range for the heater control widget.
+            # Mainsail looks up limits via the printer object name
+            # ("heater_generic <name>"), but the Klipper configfile section is
+            # named "[slow_heater <name>]".  Without these fields the frontend
+            # falls back to max_temp=0 and refuses any positive target input.
+            'max_temp': self.max_temp,
+            'min_temp': self.min_temp,
             'requested_power': self.requested_pwm,
             'refreshed_power': self.last_refresh_pwm,
             'sensor_age': round(sensor_age, 3),
