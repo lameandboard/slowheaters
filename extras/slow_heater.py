@@ -200,8 +200,11 @@ def load_config_prefix(config):
 
     # Build our Heater subclass, then register it with Klipper's global heater
     # registry exactly as heater_generic / heater_bed ultimately are.
+    # NOTE: do NOT call pheaters.register_sensor() here.  That adds the heater
+    # to available_sensors, which causes Moonraker frontends (Mainsail/Fluidd)
+    # to treat it as a read-only temperature sensor instead of a controllable
+    # heater with a target temperature input widget.
     heater = SlowHeater(config, sensor)
     pheaters.heaters[heater_name] = heater
-    pheaters.register_sensor(config, heater)
     pheaters.available_heaters.append(config.get_name())
     return heater

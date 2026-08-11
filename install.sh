@@ -12,6 +12,7 @@ KLIPPER_SERVICE="${KLIPPER_SERVICE:-klipper}"
 MOONRAKER_URL="${MOONRAKER_URL:-http://localhost:7125}"
 
 NO_RESTART=0
+FIRMWARE_RESTART=0
 DISCOVER_ONLY=0
 INTERACTIVE_MODE=0
 APPLY_ALL=0
@@ -22,19 +23,22 @@ fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 usage() {
 cat <<'EOF_HELP'
-Usage: bash install.sh [--discover] [--interactive] [--all] [--no-restart]
+Usage: bash install.sh [--discover] [--interactive] [--all] [--no-restart] [--firmware-restart]
 
 Environment overrides:
   KLIPPER_CONFIG      Path to the root Klipper config (default: ~/printer_data/config/printer.cfg)
   KLIPPER_EXTRAS_DIR  Path to klippy/extras (default: ~/klipper/klippy/extras)
   KLIPPER_SERVICE     Klipper system service name (default: klipper)
-  MOONRAKER_URL       Moonraker base URL used for restart fallback (default: http://localhost:7125)
+  MOONRAKER_URL       Moonraker base URL used for restart (default: http://localhost:7125)
 
 Options:
   --discover          Scan and report candidate heaters only (no config/module/restart changes)
   --interactive       Show discovery report and prompt before applying conversion set
   --all               Apply all discovered candidates non-interactively (includes low confidence)
   --no-restart        Do not restart Klipper after install
+  --firmware-restart  After the normal host restart, also issue a firmware restart via Moonraker.
+                      Use this when an MCU-shutdown state prevents the host restart from loading
+                      new config (equivalent to the FIRMWARE_RESTART gcode command).
   -h, --help          Show this help message
 
 Behavior summary:
@@ -42,6 +46,9 @@ Behavior summary:
   - --all broadens apply mode to convert every discovered candidate.
   - --interactive asks for confirmation before conversion.
   - --discover never copies slow_heater.py, never edits config, never restarts.
+  - Normal install: host restart via Moonraker (or systemctl fallback).
+  - --firmware-restart: additionally issues /printer/firmware_restart so MCUs
+    reload config (mirrors the two-step restart used by the RFID project).
 EOF_HELP
 }
 
@@ -54,38 +61,76 @@ restart_klipper() {
         return 0
     fi
 
+    local host_restarted=0
+
     if command -v curl >/dev/null 2>&1; then
         if curl -fsS --connect-timeout 3 --max-time 5 \
             "${MOONRAKER_URL}/server/info" >/dev/null 2>&1; then
-            info "Restarting Klipper via Moonraker at ${MOONRAKER_URL}"
+            info "Restarting Klipper host via Moonraker at ${MOONRAKER_URL}"
             if curl -fsS --connect-timeout 5 --max-time 10 \
                 -X POST "${service_url}" >/dev/null 2>&1; then
-                info "Klipper restart requested via Moonraker"
-                return 0
+                info "Klipper host restart requested via Moonraker"
+                host_restarted=1
+            else
+                warn "Moonraker service restart request failed; trying /printer/restart"
+                if curl -fsS --connect-timeout 5 --max-time 10 \
+                    -X POST "${MOONRAKER_URL}/printer/restart" >/dev/null 2>&1; then
+                    info "Klipper host restart requested via Moonraker /printer/restart"
+                    host_restarted=1
+                else
+                    warn "Moonraker host restart fallback failed"
+                fi
             fi
-            warn "Moonraker service restart request failed; trying /printer/restart"
+        fi
+    fi
+
+    if [[ "${host_restarted}" -eq 0 ]]; then
+        if command -v systemctl >/dev/null 2>&1; then
+            info "Restarting Klipper via systemctl (${KLIPPER_SERVICE})"
+            if systemctl restart "${KLIPPER_SERVICE}" >/dev/null 2>&1; then
+                info "Klipper restarted with systemctl"
+                host_restarted=1
+            elif command -v sudo >/dev/null 2>&1 && sudo -n systemctl restart "${KLIPPER_SERVICE}" >/dev/null 2>&1; then
+                info "Klipper restarted with sudo systemctl"
+                host_restarted=1
+            fi
+        fi
+    fi
+
+    if [[ "${host_restarted}" -eq 0 ]]; then
+        warn "Could not restart Klipper automatically; please restart ${KLIPPER_SERVICE} manually"
+        warn "If the printer is in MCU-shutdown state, run FIRMWARE_RESTART from your Klipper UI"
+        return 1
+    fi
+
+    if [[ "${FIRMWARE_RESTART}" -eq 1 ]]; then
+        firmware_restart_klipper
+    fi
+
+    return 0
+}
+
+firmware_restart_klipper() {
+    if [[ "${NO_RESTART}" -eq 1 ]]; then
+        info "Skipping firmware restart (--no-restart)"
+        return 0
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        if curl -fsS --connect-timeout 3 --max-time 5 \
+            "${MOONRAKER_URL}/server/info" >/dev/null 2>&1; then
+            info "Issuing firmware restart via Moonraker at ${MOONRAKER_URL}"
             if curl -fsS --connect-timeout 5 --max-time 10 \
-                -X POST "${MOONRAKER_URL}/printer/restart" >/dev/null 2>&1; then
+                -X POST "${MOONRAKER_URL}/printer/firmware_restart" >/dev/null 2>&1; then
                 info "Firmware restart requested via Moonraker"
                 return 0
             fi
-            warn "Moonraker restart fallback failed"
+            warn "Moonraker firmware restart request failed"
         fi
     fi
 
-    if command -v systemctl >/dev/null 2>&1; then
-        info "Restarting Klipper via systemctl (${KLIPPER_SERVICE})"
-        if systemctl restart "${KLIPPER_SERVICE}" >/dev/null 2>&1; then
-            info "Klipper restarted with systemctl"
-            return 0
-        fi
-        if command -v sudo >/dev/null 2>&1 && sudo -n systemctl restart "${KLIPPER_SERVICE}" >/dev/null 2>&1; then
-            info "Klipper restarted with sudo systemctl"
-            return 0
-        fi
-    fi
-
-    warn "Could not restart Klipper automatically; please restart ${KLIPPER_SERVICE} manually"
+    warn "Could not issue firmware restart automatically"
+    warn "Run FIRMWARE_RESTART from your Klipper UI (Mainsail/Fluidd console) to reset MCU state"
     return 1
 }
 
@@ -93,6 +138,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-restart)
             NO_RESTART=1
+            shift
+            ;;
+        --firmware-restart)
+            FIRMWARE_RESTART=1
             shift
             ;;
         --discover)
@@ -606,6 +655,19 @@ if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
             exit 0
             ;;
     esac
+else
+    # Non-interactive: run a discovery scan first so we can report results and
+    # abort early if there is nothing eligible to install.
+    info "Running pre-install discovery scan"
+    scan_output=$(run_config_scan discover "${APPLY_POLICY}" full)
+    printf '%s\n' "${scan_output}"
+
+    if printf '%s\n' "${scan_output}" | grep -q "eligible_conversions=0 existing_slow=0"; then
+        warn "No eligible slow_heater conversions were found under the current apply policy."
+        warn "The slow_heater module has NOT been installed and Klipper has not been restarted."
+        warn "To include lower-confidence candidates, re-run with: ./install.sh --interactive --all"
+        exit 0
+    fi
 fi
 
 mkdir -p "${BACKUPS_DIR}"
