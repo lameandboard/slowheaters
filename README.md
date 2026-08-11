@@ -1,65 +1,67 @@
-This plugin uses Klipper's existing heaters.Heater class and changes onlythe output scheduling behavior required for slow-reporting sensors.
+# slowheaters
 
-The normal Klipper logic is retained for:
+`slowheaters` is a Klipper extra for slow-reporting heater sensors such as AHT10/AHT20/AHT3X dryers or chambers. It keeps Klipper's normal heater logic and changes only the MCU output refresh path so the heater can be refreshed safely while a sensor reports less frequently.
 
-sensor setup and min/max checking
+## Quick start
 
-temperature_combined
+> [!WARNING]
+> Back up your printer config before testing any heater changes. `./install.sh` creates a timestamped backup of only the matching Vivid heater sections in `./backups/`, but you should still keep your own known-good printer backup.
 
-PID control
+Install:
 
-watermark / bang-bang control
+```sh
+./install.sh
+```
 
-verify_heater
+Uninstall and restore the latest backed-up Vivid heater sections:
 
-pid_calibrate
+```sh
+./uninstall.sh
+```
 
-SET_HEATER_TEMPERATURE
+By default the scripts use:
 
-TURN_OFF_HEATERS
+- Klipper config: `~/printer_data/config/printer.cfg`
+- Klipper extras directory: `~/klipper/klippy/extras`
+- Klipper service: `klipper`
 
-temperature smoothing
+For non-standard paths you can override them with `KLIPPER_CONFIG`, `KLIPPER_EXTRAS_DIR`, and `KLIPPER_SERVICE`.
 
-M105 / heater status
+## What the install script changes
 
-main-thread heater safety checks
+`install.sh`:
 
-The difference is that PID/watermark updates store their requested heaterpower, while a short timer independently refreshes the MCU heater output.
+- finds every `[heater_generic Vivid_*]` section in `printer.cfg`
+- stores only those Vivid heater sections in a timestamped backup under `backups/`
+- converts each matching section to `[slow_heater Vivid_*]`
+- preserves the existing heater settings and adds these defaults when missing:
+  - `refresh_time: 1.0`
+  - `max_mcu_duration: 3.0`
+  - `sensor_timeout: 15.0`
+  - `schedule_lead_time: 0.100`
+- copies `slow_heater.py` into Klipper's extras directory
+- verifies Python syntax before restarting Klipper
 
-1. Restore stock heaters.py
+`uninstall.sh`:
 
-Remove the temporary Vivid-specific edit from heaters.py and put it back to:
+- finds every `[slow_heater Vivid_*]` section in `printer.cfg`
+- restores those sections from the newest backup in `backups/`
+- removes `slow_heater.py` from the Klipper extras directory
+- restarts Klipper after restoration
 
-self.mcu_pwm.setup_max_duration(MAX_HEAT_TIME)
+Both scripts report which heaters were found and whether they were updated or restored. If the config already appears installed or uninstalled, the scripts say so and avoid duplicating changes.
 
-Do not keep the special Vivid_1_dryer 10-second modification when testing thisplugin.
-
-2. Install
-
-Copy slow_heater.py to:
-
-~/klipper/klippy/extras/slow_heater.py
-
-Check Python syntax:
-
-python3 -m py_compile ~/klipper/klippy/extras/slow_heater.py
-
-Then restart Klipper:
-
-sudo systemctl restart klipper
-
-3. Change the Vivid dryer section
+## Example config
 
 Replace:
 
+```ini
 [heater_generic Vivid_1_dryer]
+```
 
 with:
 
-[slow_heater Vivid_1_dryer]
-
-Keep the normal heater options and add the slow-heater options:
-
+```ini
 [slow_heater Vivid_1_dryer]
 heater_pin:         Vivid_1:HEATER
 
@@ -81,27 +83,29 @@ refresh_time:       1.0
 max_mcu_duration:   3.0
 sensor_timeout:     15.0
 schedule_lead_time: 0.100
+```
 
-Keep these existing sections unchanged:
+Keep related sections such as `[verify_heater ...]` and `[heater_fan ...]` unchanged.
 
-[verify_heater Vivid_1_dryer]
-max_error:       300
-check_gain_time: 600
-hysteresis:      10
-heating_gain:    1
+## How it works
 
-[heater_fan Vivid_1_dryer_fan]
-pin:            Vivid_1:DRY_FAN
-max_power:      0.3
-shutdown_speed: 0
-heater:         Vivid_1_dryer
+The normal Klipper logic is retained for:
 
-And leave your AHT sensor report time at its supported value:
+- sensor setup and min/max checking
+- `temperature_combined`
+- PID control
+- watermark / bang-bang control
+- `verify_heater`
+- `pid_calibrate`
+- `SET_HEATER_TEMPERATURE`
+- `TURN_OFF_HEATERS`
+- temperature smoothing
+- `M105` / heater status
+- main-thread heater safety checks
 
-aht10_report_time: 5
+The difference is that PID or watermark updates store the requested heater power, while a short timer independently refreshes the MCU heater output.
 
-What the timing now looks like
-
+```text
 AHT temperature report (~5 s)
           |
           v
@@ -122,35 +126,33 @@ Vivid heater output
 
 MCU max-duration watchdog: 3.0 s
 Sensor stale cutoff:      15.0 s
+```
 
-So a slow sensor does not require extending the MCU watchdog to 10 seconds.If the Klipper host stops refreshing the MCU, the normal short MCU watchdog isstill present. If the sensor stops reporting while the host remains alive, theplugin stops refreshing heat after sensor_timeout.
+So a slow sensor does not require extending the MCU watchdog to 10 seconds. If the Klipper host stops refreshing the MCU, the normal short MCU watchdog is still present. If the sensor stops reporting while the host remains alive, the plugin stops refreshing heat after `sensor_timeout`.
 
-First tests
+Extra status values are exposed under `printer["slow_heater Vivid_1_dryer"]`: `requested_power`, `refreshed_power`, `sensor_age`, `refresh_time`, `max_mcu_duration`, and `sensor_timeout`.
 
-This is experimental heater-control code. Test attended and at a conservativedryer temperature first.
+## Testing sequence
 
-Recommended sequence:
+This is experimental heater-control code. Test attended and at a conservative dryer temperature first.
 
-Start Klipper with target 0 and verify no config errors.
+1. Start Klipper with target `0` and verify no config errors.
+2. Set the dryer to a low target.
+3. Confirm heater power appears in Mainsail.
+4. Set target to `0` and verify the heater turns off promptly.
+5. Run `TURN_OFF_HEATERS` and verify it turns off promptly.
+6. Let it regulate for a while while the printer is idle.
+7. Run the same print that previously reproduced `Scheduled digital out event will exceed max_duration`.
+8. Check `klippy.log` for Vivid shutdowns.
+9. Only after the above is stable, test longer prints.
 
-Set the dryer to a low target.
+## Attribution
 
-Confirm heater power appears in Mainsail.
+This project builds on the Klipper heater model and is intended to be used as a Klipper extra. Credit and thanks to:
 
-Set target to 0 and verify heater turns off promptly.
+- [Klipper](https://www.klipper3d.org/) for the core heater implementation that this plugin subclasses
+- AFC (Adaptive Filament Cooling) for related dryer-control ideas and prior experimentation in this area
 
-Run TURN_OFF_HEATERS and verify it turns off promptly.
+## License
 
-Let it regulate for a while while the printer is idle.
-
-Run the same print that previously reproduced:Scheduled digital out event will exceed max_duration.
-
-Check klippy.log for Vivid shutdowns.
-
-Only after the above is stable, test longer prints.
-
-Extra status values are exposed under printer["slow_heater Vivid_1_dryer"]:requested_power, refreshed_power, sensor_age, refresh_time,max_mcu_duration, and sensor_timeout.
-
-Important
-
-This plugin is intentionally separate from Klipper's normal heater implementation.It should only be used for slow-response dryer/chamber sensors where the normalheater scheduling path has been demonstrated to hit the MCU max_durationsafety check.
+This repository is licensed under GPL-3.0-or-later. See `LICENSE`.
