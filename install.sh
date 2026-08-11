@@ -443,6 +443,18 @@ for section in all_sections:
         confidence_level = update_confidence(confidence_level, "high")
         reasons.append(f"heater sensor_type is known slow sensor '{direct_sensor_type}'")
         linked_sensor = f"sensor_type={direct_sensor_type}"
+    elif direct_sensor_type.lower() == "temperature_combined":
+        sensor_list_val = options.get("sensor_list", "")
+        slow_in_list = [
+            tok for tok in re.split(r"[\s,]+", sensor_list_val.lower())
+            if tok in KNOWN_SLOW_SENSOR_TYPES
+        ]
+        if slow_in_list:
+            confidence_level = update_confidence(confidence_level, "high")
+            reasons.append(
+                f"temperature_combined sensor_list references slow sensor(s): {', '.join(slow_in_list)}"
+            )
+            linked_sensor = "sensor_type=temperature_combined"
 
     if kind == "heater_generic":
         slow_option_keys = sorted(set(options).intersection(SLOW_HEATER_OPTION_KEYS))
