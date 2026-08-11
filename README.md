@@ -73,7 +73,11 @@ Slow-heater settings:
 
 ## Install
 
+SSH into your Klipper host and clone the repository:
+
 ```bash
+cd ~
+git clone https://github.com/lameandboard/slowheaters.git
 cd ~/slowheaters
 bash install.sh
 ```
@@ -133,6 +137,14 @@ The uninstall script:
 - restarts Klipper
 
 Running uninstall again is also safe as long as a backup file still exists.
+
+## Update
+
+```bash
+cd ~/slowheaters
+git pull
+bash install.sh
+```
 
 ## Manual validation
 
