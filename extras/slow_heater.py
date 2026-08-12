@@ -70,6 +70,16 @@ class SlowHeater(heaters.Heater):
         # MAX_HEAT_TIME here; this plugin keeps it configurable per slow heater.
         self.mcu_pwm.setup_max_duration(self.max_mcu_duration)
 
+        # Workaround for temperature_combined sensors: Klipper's Heater.__init__
+        # reads min_temp/max_temp from the sensor, but temperature_combined
+        # doesn't expose heater-specific limits. Explicitly read them from config
+        # if present, overriding the sensor defaults. This ensures Mainsail/Fluidd
+        # can set target temperatures correctly.
+        if config.has_option('min_temp'):
+            self.min_temp = config.getfloat('min_temp')
+        if config.has_option('max_temp'):
+            self.max_temp = config.getfloat('max_temp')
+
         self._reactor = self.printer.get_reactor()
         self._refresh_timer = self._reactor.register_timer(self._refresh_event)
 
@@ -80,10 +90,11 @@ class SlowHeater(heaters.Heater):
 
         logging.info(
             "%s: SlowHeater enabled: sensor_report=%.3fs refresh=%.3fs "
-            "max_mcu_duration=%.3fs sensor_timeout=%.3fs lead=%.3fs",
+            "max_mcu_duration=%.3fs sensor_timeout=%.3fs lead=%.3fs "
+            "temp_range=%.1f-%.1f°C",
             self.name, self.pwm_delay, self.refresh_time,
             self.max_mcu_duration, self.sensor_timeout,
-            self.schedule_lead_time)
+            self.schedule_lead_time, self.min_temp, self.max_temp)
 
     def _handle_slow_ready(self):
         self._slow_ready = True
