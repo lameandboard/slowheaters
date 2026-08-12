@@ -142,16 +142,27 @@ _SLOWHEATERS_END_MARKER="# <<< slowheaters update-manager <<<"
 remove_moonraker_block() {
     local cfg="$1"
     [[ -f "${cfg}" ]] || return 0
-    awk -v b="${_SLOWHEATERS_BEGIN_MARKER}" -v e="${_SLOWHEATERS_END_MARKER}" '
+    local tmp
+    tmp="$(mktemp "${cfg}.XXXXXX")"
+    if awk -v b="${_SLOWHEATERS_BEGIN_MARKER}" -v e="${_SLOWHEATERS_END_MARKER}" '
         $0==b {skip=1; next}
         $0==e {skip=0; next}
         !skip {print}
-    ' "${cfg}" > "${cfg}.tmp" && mv "${cfg}.tmp" "${cfg}"
+    ' "${cfg}" > "${tmp}"; then
+        mv "${tmp}" "${cfg}"
+    else
+        rm -f "${tmp}"
+        warn "Failed to rewrite ${cfg}; leaving original unchanged"
+    fi
 }
 
 add_moonraker_block() {
     local cfg="$1"
-    [[ -f "${cfg}" ]] || return 0
+    if [[ ! -f "${cfg}" ]]; then
+        warn "Moonraker config not found at ${cfg}; skipping update-manager entry"
+        warn "Set MOONRAKER_CONF to your moonraker.conf path and re-run install.sh to add it later"
+        return 0
+    fi
     if ! grep -Fq "${_SLOWHEATERS_BEGIN_MARKER}" "${cfg}"; then
         info "Adding slowheaters update-manager block to ${cfg}"
         {

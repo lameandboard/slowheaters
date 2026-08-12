@@ -86,11 +86,18 @@ remove_moonraker_block() {
     [[ -f "${cfg}" ]] || return 0
     if grep -Fq "${_SLOWHEATERS_BEGIN_MARKER}" "${cfg}"; then
         info "Removing slowheaters update-manager block from ${cfg}"
-        awk -v b="${_SLOWHEATERS_BEGIN_MARKER}" -v e="${_SLOWHEATERS_END_MARKER}" '
+        local tmp
+        tmp="$(mktemp "${cfg}.XXXXXX")"
+        if awk -v b="${_SLOWHEATERS_BEGIN_MARKER}" -v e="${_SLOWHEATERS_END_MARKER}" '
             $0==b {skip=1; next}
             $0==e {skip=0; next}
             !skip {print}
-        ' "${cfg}" > "${cfg}.tmp" && mv "${cfg}.tmp" "${cfg}"
+        ' "${cfg}" > "${tmp}"; then
+            mv "${tmp}" "${cfg}"
+        else
+            rm -f "${tmp}"
+            warn "Failed to rewrite ${cfg}; leaving original unchanged"
+        fi
     else
         info "No slowheaters update-manager block found in ${cfg}; nothing to remove"
     fi
