@@ -1,12 +1,23 @@
-# Slow-reporting sensor heater support for Klipper
+# heater_slow.py - Slow-reporting sensor heater support for Klipper
 #
-# This module subclasses Klipper's normal Heater class so it keeps the
-# existing heater behavior (PID / watermark control, temperature checks,
-# verify_heater, pid_calibrate, SET_HEATER_TEMPERATURE, M105/status, etc.)
-# and changes only the heater-output scheduling path.
+# Mainsail-compatible custom heater type.
 #
-# Intended for slow-reporting temperature sensors such as AHT10/AHT20/AHT3X
-# used for filament dryers / chamber heaters.
+# Use:
+#   [heater_slow my_heater]
+#
+# The "heater_" prefix is intentional. Mainsail treats objects whose names
+# begin with "heater_" as controllable heaters and reads min_temp/max_temp
+# from the matching config section.
+#
+# This class inherits Klipper's normal heaters.Heater implementation and only
+# changes how heater PWM is scheduled:
+#   - PID / watermark logic remains Klipper's normal logic
+#   - slow sensor callbacks update the requested PWM
+#   - a reactor timer refreshes the MCU output independently
+#   - the MCU max_duration watchdog remains short
+#   - stale sensor data forces heater output off
+#
+# Experimental heater-control code. Test attended.
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -16,23 +27,10 @@ from . import heaters
 
 
 class HeaterSlow(heaters.Heater):
-    """Normal Klipper heater logic with independent MCU PWM refresh.
-
-    The stock Heater class updates the heater pin from the temperature
-    callback. That works well for normal thermistors, but a sensor that only
-    reports every several seconds can leave scheduled heater events farther
-    apart than the MCU max_duration safety window.
-
-    This subclass keeps Klipper's normal temperature and control logic, but:
-      * set_pwm() stores the controller's requested PWM value
-      * a reactor timer refreshes the MCU heater output independently
-      * max_mcu_duration remains a short MCU-side failsafe
-      * stale sensor data forces the requested output to zero
-    """
+    """Normal Klipper Heater logic with independent PWM refresh."""
 
     def __init__(self, config, sensor):
-        # Slow-heater-specific settings must exist before calling Heater.__init__
-        # because Heater installs callbacks that ultimately call self.set_pwm().
+        # Plugin-specific timing options.
         self.refresh_time = config.getfloat(
             'refresh_time', 1.0, above=0.0)
         self.max_mcu_duration = config.getfloat(
@@ -42,92 +40,93 @@ class HeaterSlow(heaters.Heater):
         self.schedule_lead_time = config.getfloat(
             'schedule_lead_time', 0.100, above=0.0)
 
-        # Require comfortable margin so a normal refresh should arrive well
-        # before the MCU's max-duration watchdog can expire.
-        if self.refresh_time >= (self.max_mcu_duration * 0.5):
+        # Keep enough watchdog margin for jitter / host scheduling delays.
+        if self.refresh_time >= self.max_mcu_duration:
             raise config.error(
-                "heater_slow refresh_time (%.3fs) must be less than half "
+                "refresh_time (%.3fs) must be less than "
+                "max_mcu_duration (%.3fs)"
+                % (self.refresh_time, self.max_mcu_duration))
+
+        if self.refresh_time > self.max_mcu_duration * 0.5:
+            raise config.error(
+                "refresh_time (%.3fs) must be no more than half of "
                 "max_mcu_duration (%.3fs)"
                 % (self.refresh_time, self.max_mcu_duration))
 
         if self.schedule_lead_time >= self.max_mcu_duration:
             raise config.error(
-                "heater_slow schedule_lead_time (%.3fs) must be less than "
+                "schedule_lead_time (%.3fs) must be less than "
                 "max_mcu_duration (%.3fs)"
                 % (self.schedule_lead_time, self.max_mcu_duration))
 
-        self.requested_pwm = 0.0
-        self.last_refresh_pwm = 0.0
-        self.last_refresh_print_time = 0.0
-        self._slow_ready = False
+        if self.sensor_timeout <= self.refresh_time:
+            raise config.error(
+                "sensor_timeout (%.3fs) must be greater than "
+                "refresh_time (%.3fs)"
+                % (self.sensor_timeout, self.refresh_time))
 
-        # This is the complete normal Klipper Heater initialization path:
-        # sensor min/max + callback, PID/watermark control, PWM pin setup,
-        # verify_heater, pid_calibrate, SET_HEATER_TEMPERATURE, status, etc.
+        self.requested_pwm = 0.0
+        self.refreshed_pwm = 0.0
+        self.last_refresh_print_time = 0.0
+
+        self._slow_ready = False
+        self._stale_warning_active = False
+
+        # Keep Klipper's complete normal Heater behavior:
+        # sensor setup, min/max, smoothing, PID/watermark, verify_heater,
+        # pid_calibrate, SET_HEATER_TEMPERATURE, status, shutdown handling.
         super().__init__(config, sensor)
 
-        # Override only this heater's MCU safety duration. Stock Klipper uses
-        # MAX_HEAT_TIME here; this plugin keeps it configurable per heater_slow.
+        # Override max_duration only for this custom heater.
         self.mcu_pwm.setup_max_duration(self.max_mcu_duration)
 
-        # Workaround for temperature_combined sensors: Klipper's Heater.__init__
-        # reads min_temp/max_temp from the sensor, but temperature_combined
-        # doesn't expose heater-specific limits. Explicitly read them from config
-        # if present, overriding the sensor defaults. This ensures Mainsail/Fluidd
-        # can set target temperatures correctly.
-        self.min_temp = config.getfloat('min_temp', default=0.0)
-        self.max_temp = config.getfloat('max_temp', default=80.0)
-
         self._reactor = self.printer.get_reactor()
-        self._refresh_timer = self._reactor.register_timer(self._refresh_event)
+        self._refresh_timer = self._reactor.register_timer(
+            self._refresh_event)
 
         self.printer.register_event_handler(
-            "klippy:ready", self._handle_slow_ready)
+            "klippy:ready", self._handle_ready)
         self.printer.register_event_handler(
-            "gcode:request_restart", self._handle_slow_restart)
+            "gcode:request_restart", self._handle_restart)
 
         logging.info(
-            "%s: HeaterSlow enabled: sensor_report=%.3fs refresh=%.3fs "
-            "max_mcu_duration=%.3fs sensor_timeout=%.3fs lead=%.3fs "
-            "temp_range=%.1f-%.1f°C",
+            "%s: heater_slow enabled "
+            "(sensor_report=%.3fs refresh=%.3fs "
+            "max_mcu_duration=%.3fs sensor_timeout=%.3fs lead=%.3fs)",
             self.name, self.pwm_delay, self.refresh_time,
             self.max_mcu_duration, self.sensor_timeout,
-            self.schedule_lead_time, self.min_temp, self.max_temp)
+            self.schedule_lead_time)
 
-    def _handle_slow_ready(self):
+    def _handle_ready(self):
         self._slow_ready = True
         eventtime = self._reactor.monotonic()
         self._reactor.update_timer(
             self._refresh_timer, eventtime + self.refresh_time)
 
-    def _handle_slow_restart(self, print_time=0.0):
+    def _handle_restart(self, print_time=0.0):
         self.requested_pwm = 0.0
-        self.last_refresh_pwm = 0.0
+        self.refreshed_pwm = 0.0
         self._slow_ready = False
+        self._stale_warning_active = False
 
     def _handle_shutdown(self):
-        # Preserve the stock Heater shutdown behavior.
+        # Preserve stock Heater shutdown behavior.
         super()._handle_shutdown()
         self.requested_pwm = 0.0
-        self.last_refresh_pwm = 0.0
+        self.refreshed_pwm = 0.0
         self._slow_ready = False
 
     def set_pwm(self, read_time, value):
-        """Store the PWM request produced by Klipper's normal controller.
+        """Store controller output instead of scheduling it immediately.
 
-        This is the one stock Heater method we intentionally replace.
-        PID / watermark still call heater.set_pwm() exactly as before, but
-        we do not schedule a pin event here. The independent refresh timer
-        does that at refresh_time intervals.
+        Klipper's stock ControlPID / ControlBangBang still call this method.
+        The reactor heartbeat below performs the actual MCU refresh.
         """
         if self.target_temp <= 0.0 or read_time > self.verify_mainthread_time:
             value = 0.0
 
         value = max(0.0, min(self.max_power, value))
         self.requested_pwm = value
-
-        # Preserve stock status semantics: "power" reflects the last requested
-        # heater PWM. The actual pin is refreshed below on its own cadence.
         self.last_pwm_value = value
 
     def _refresh_event(self, eventtime):
@@ -136,142 +135,105 @@ class HeaterSlow(heaters.Heater):
 
         mcu = self.mcu_pwm.get_mcu()
         print_time = mcu.estimated_print_time(eventtime)
-
         pwm = self.requested_pwm
 
-        # Preserve Heater's host-side safety behavior.
+        # Retain Klipper's host-side target / main-thread safety behavior.
         if self.target_temp <= 0.0:
             pwm = 0.0
         elif print_time > self.verify_mainthread_time:
             pwm = 0.0
 
-        # Additional safety for a slow sensor: never keep refreshing heat if
-        # the sensor has stopped reporting.
+        # Slow-sensor fail-safe: do not keep refreshing heat indefinitely
+        # when temperature reports stop.
         if self.target_temp > 0.0:
-            sensor_age = print_time - self.last_temp_time
-            if self.last_temp_time <= 0.0 or sensor_age > self.sensor_timeout:
+            if self.last_temp_time <= 0.0:
+                sensor_age = float('inf')
+            else:
+                sensor_age = print_time - self.last_temp_time
+
+            if sensor_age > self.sensor_timeout:
                 pwm = 0.0
                 self.requested_pwm = 0.0
-                logging.warning(
-                    "%s: temperature data stale (age=%.3fs, timeout=%.3fs); "
-                    "forcing heater PWM off",
-                    self.name, sensor_age, self.sensor_timeout)
 
-        # Keep the command slightly ahead of estimated MCU print time.
-        # Do not intentionally queue far into the future; the point of this
-        # plugin is frequent refreshes inside max_mcu_duration.
+                if not self._stale_warning_active:
+                    age_text = (
+                        "unknown" if sensor_age == float('inf')
+                        else "%.3fs" % sensor_age
+                    )
+                    logging.warning(
+                        "%s: temperature data stale "
+                        "(age=%s timeout=%.3fs); forcing heater off",
+                        self.name, age_text, self.sensor_timeout)
+                    self._stale_warning_active = True
+            else:
+                self._stale_warning_active = False
+        else:
+            self._stale_warning_active = False
+
+        # Schedule close to current MCU print time and refresh frequently.
         pwm_time = print_time + self.schedule_lead_time
 
-        # Avoid a backwards / duplicate print-time request if the clock estimate
-        # moves slightly between timer callbacks.
+        # Avoid duplicate/backwards scheduled timestamps.
         if pwm_time <= self.last_refresh_print_time:
             pwm_time = self.last_refresh_print_time + 0.001
 
-        # Prevent sensor-lag overshoot: slow sensors may not report a rising
-        # temperature for several seconds.  If the last known reading is already
-        # at or above the target, stop refreshing heat immediately rather than
-        # continuing to blast the previous PID output.  Applied last so no
-        # subsequent logic can re-enable heat before the MCU write.  PID will
-        # resume sending positive PWM via set_pwm() once the sensor reports the
-        # temperature has dropped below target again.
-        if self.target_temp > 0.0 and self.last_temp >= self.target_temp:
-            pwm = 0.0
-
         self.mcu_pwm.set_pwm(pwm_time, pwm)
+
         self.last_refresh_print_time = pwm_time
-        self.last_refresh_pwm = pwm
+        self.refreshed_pwm = pwm
         self.last_pwm_value = pwm
 
         return eventtime + self.refresh_time
 
     def get_status(self, eventtime):
-        # Start with Klipper's normal heater status.
-        # Guard against any exception inside super().get_status() (e.g. if
-        # the MCU or lock is not yet ready) so Moonraker always receives a
-        # well-formed dict rather than null values for all fields.
-        try:
-            status = super().get_status(eventtime)
-        except Exception:
-            status = {}
+        # Keep stock heater status keys:
+        # temperature, target, power
+        status = super().get_status(eventtime)
 
-        # Mainsail/Fluidd determine the allowed target range from the
-        # "temperature", "target", "power", "min_temp" and "max_temp" fields
-        # of the printer object they render ("heater_generic <name>").
-        # Klipper's base Heater.get_status() provides temperature/target/power,
-        # but NOT min_temp/max_temp.  Moonraker returns null for any key that
-        # is absent from the status dict, which causes the UI to clamp the
-        # target slider to 0.  Force all five fields to explicit numeric values
-        # so Moonraker always returns non-null for a printer/objects/query.
-        status['temperature'] = float(
-            status['temperature'] if status.get('temperature') is not None
-            else 0.0)
-        status['target'] = float(
-            status['target'] if status.get('target') is not None
-            else self.target_temp if self.target_temp is not None else 0.0)
-        status['power'] = float(
-            status['power'] if status.get('power') is not None
-            else self.last_pwm_value if self.last_pwm_value is not None else 0.0)
-        status['min_temp'] = float(self.min_temp)
-        status['max_temp'] = float(self.max_temp)
+        # Extra diagnostic fields. Frontends safely ignore unknown keys.
+        mcu = self.mcu_pwm.get_mcu()
+        print_time = mcu.estimated_print_time(eventtime)
 
-        # Extra debugging fields are harmless to Mainsail / macros and make
-        # testing this experimental heater easier.
-        # Compute sensor age defensively; MCU may not be ready at query time.
-        try:
-            mcu = self.mcu_pwm.get_mcu()
-            print_time = mcu.estimated_print_time(eventtime)
-            sensor_age = round(max(0.0, print_time - self.last_temp_time), 3)
-        except Exception:
-            sensor_age = 0.0
+        if self.last_temp_time <= 0.0:
+            sensor_age = -1.0
+        else:
+            sensor_age = max(0.0, print_time - self.last_temp_time)
 
         status.update({
-            'heater_slow_active': True,
+            # Also expose configured limits for API/debug consumers.
+            'min_temp': self.min_temp,
+            'max_temp': self.max_temp,
+
             'requested_power': self.requested_pwm,
-            'refreshed_power': self.last_refresh_pwm,
-            'sensor_age': sensor_age,
+            'refreshed_power': self.refreshed_pwm,
+            'sensor_age': round(sensor_age, 3),
             'refresh_time': self.refresh_time,
             'max_mcu_duration': self.max_mcu_duration,
             'sensor_timeout': self.sensor_timeout,
-            'schedule_lead_time': self.schedule_lead_time,
         })
         return status
 
 
 def load_config_prefix(config):
-    """Create a heater from a [heater_slow <name>] config section."""
+    """Load [heater_slow <name>] and register it as a normal Klipper heater."""
     printer = config.get_printer()
     pheaters = printer.load_object(config, 'heaters')
 
     heater_name = config.get_name().split()[-1]
-    if heater_name in pheaters.heaters:
-        raise config.error("Heater %s already registered" % (heater_name,))
 
-    # Use the exact same sensor factory path as Klipper's setup_heater().
+    if heater_name in pheaters.heaters:
+        raise config.error(
+            "Heater %s already registered" % heater_name)
+
+    # Same sensor factory path used by Klipper's normal setup_heater().
     sensor = pheaters.setup_sensor(config)
 
-    # Build our Heater subclass, then register it with Klipper's global heater
-    # registry exactly as heater_generic / heater_bed ultimately are.
-    # NOTE: do NOT call pheaters.register_sensor() here.  That adds the heater
-    # to available_sensors, which causes Moonraker frontends (Mainsail/Fluidd)
-    # to treat it as a read-only temperature sensor instead of a controllable
-    # heater with a target temperature input widget.
+    # Create our Heater subclass.
     heater = HeaterSlow(config, sensor)
-    pheaters.heaters[heater_name] = heater
 
-    # Mainsail and Fluidd determine whether to show a target temperature input
-    # widget by checking whether the printer object name starts with "heater_"
-    # (or "extruder"/"temperature_fan").  Because our config section is named
-    # [heater_slow <name>], Klipper registers the object as "heater_slow <name>"
-    # which does not match that prefix, so the UI silently hides the target box.
-    #
-    # Fix: also register the same object under "heater_generic <name>" in the
-    # Klipper printer object namespace, and expose that alias in
-    # available_heaters.  Moonraker subscribes to "heater_generic <name>",
-    # receives the canonical {temperature, target, power} status fields, and
-    # the frontend correctly renders the target control.  SET_HEATER_TEMPERATURE
-    # and all other gcode remain unaffected because they key off heater_name
-    # (the bare name without prefix), not the full object name.
-    heater_generic_name = 'heater_generic %s' % (heater_name,)
-    printer.add_object(heater_generic_name, heater)
-    pheaters.available_heaters.append(heater_generic_name)
+    # Same registration path used by Klipper's normal heaters.
+    pheaters.heaters[heater_name] = heater
+    pheaters.register_sensor(config, heater)
+    pheaters.available_heaters.append(config.get_name())
+
     return heater
