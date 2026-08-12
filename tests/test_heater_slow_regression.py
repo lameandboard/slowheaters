@@ -6,7 +6,7 @@ import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "extras" / "heater_slow.py"
+MODULE_PATH = REPO_ROOT / "heater_slow" / "heater_slow.py"
 
 
 class FakeMCU:
