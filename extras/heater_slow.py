@@ -15,7 +15,7 @@ import logging
 from . import heaters
 
 
-class SlowHeater(heaters.Heater):
+class HeaterSlow(heaters.Heater):
     """Normal Klipper heater logic with independent MCU PWM refresh.
 
     The stock Heater class updates the heater pin from the temperature
@@ -46,13 +46,13 @@ class SlowHeater(heaters.Heater):
         # before the MCU's max-duration watchdog can expire.
         if self.refresh_time >= (self.max_mcu_duration * 0.5):
             raise config.error(
-                "slow_heater refresh_time (%.3fs) must be less than half "
+                "heater_slow refresh_time (%.3fs) must be less than half "
                 "max_mcu_duration (%.3fs)"
                 % (self.refresh_time, self.max_mcu_duration))
 
         if self.schedule_lead_time >= self.max_mcu_duration:
             raise config.error(
-                "slow_heater schedule_lead_time (%.3fs) must be less than "
+                "heater_slow schedule_lead_time (%.3fs) must be less than "
                 "max_mcu_duration (%.3fs)"
                 % (self.schedule_lead_time, self.max_mcu_duration))
 
@@ -67,7 +67,7 @@ class SlowHeater(heaters.Heater):
         super().__init__(config, sensor)
 
         # Override only this heater's MCU safety duration. Stock Klipper uses
-        # MAX_HEAT_TIME here; this plugin keeps it configurable per slow heater.
+        # MAX_HEAT_TIME here; this plugin keeps it configurable per heater_slow.
         self.mcu_pwm.setup_max_duration(self.max_mcu_duration)
 
         # Workaround for temperature_combined sensors: Klipper's Heater.__init__
@@ -87,7 +87,7 @@ class SlowHeater(heaters.Heater):
             "gcode:request_restart", self._handle_slow_restart)
 
         logging.info(
-            "%s: SlowHeater enabled: sensor_report=%.3fs refresh=%.3fs "
+            "%s: HeaterSlow enabled: sensor_report=%.3fs refresh=%.3fs "
             "max_mcu_duration=%.3fs sensor_timeout=%.3fs lead=%.3fs "
             "temp_range=%.1f-%.1f°C",
             self.name, self.pwm_delay, self.refresh_time,
@@ -225,7 +225,7 @@ class SlowHeater(heaters.Heater):
             sensor_age = 0.0
 
         status.update({
-            'slow_heater_active': True,
+            'heater_slow_active': True,
             'requested_power': self.requested_pwm,
             'refreshed_power': self.last_refresh_pwm,
             'sensor_age': sensor_age,
@@ -238,7 +238,7 @@ class SlowHeater(heaters.Heater):
 
 
 def load_config_prefix(config):
-    """Create a heater from a [slow_heater <name>] config section."""
+    """Create a heater from a [heater_slow <name>] config section."""
     printer = config.get_printer()
     pheaters = printer.load_object(config, 'heaters')
 
@@ -255,13 +255,13 @@ def load_config_prefix(config):
     # to available_sensors, which causes Moonraker frontends (Mainsail/Fluidd)
     # to treat it as a read-only temperature sensor instead of a controllable
     # heater with a target temperature input widget.
-    heater = SlowHeater(config, sensor)
+    heater = HeaterSlow(config, sensor)
     pheaters.heaters[heater_name] = heater
 
     # Mainsail and Fluidd determine whether to show a target temperature input
     # widget by checking whether the printer object name starts with "heater_"
     # (or "extruder"/"temperature_fan").  Because our config section is named
-    # [slow_heater <name>], Klipper registers the object as "slow_heater <name>"
+    # [heater_slow <name>], Klipper registers the object as "heater_slow <name>"
     # which does not match that prefix, so the UI silently hides the target box.
     #
     # Fix: also register the same object under "heater_generic <name>" in the

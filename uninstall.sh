@@ -104,7 +104,7 @@ import sys
 from pathlib import Path
 
 backups_dir = Path(sys.argv[1]).expanduser().resolve()
-files = list(backups_dir.glob("slow_heater_sections_*.json")) + list(backups_dir.glob("vivid_sections_*.json"))
+files = list(backups_dir.glob("heater_slow_sections_*.json")) + list(backups_dir.glob("slow_heater_sections_*.json")) + list(backups_dir.glob("vivid_sections_*.json"))
 if not files:
     raise SystemExit(0)
 
@@ -122,7 +122,7 @@ PY
 )" || fail "Failed to evaluate backup files in ${BACKUPS_DIR}"
 
 if [[ -z "${LATEST_BACKUP}" ]]; then
-    fail "No slow_heater section backups were found in ${BACKUPS_DIR}"
+    fail "No heater_slow section backups were found in ${BACKUPS_DIR}"
 fi
 
 info "Using Klipper config: ${KLIPPER_CONFIG}"
@@ -219,7 +219,7 @@ for entry in backup_sections:
         kind, current_name = header_parts(section["header"])
         if current_name != name:
             continue
-        if kind not in {"slow_heater", "heater_generic"}:
+        if kind not in {"heater_slow", "slow_heater", "heater_generic"}:
             continue
         target_section = section
         break
@@ -249,7 +249,7 @@ for config_path in sorted(config_paths):
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
     for section in parse_sections(lines):
         kind, name = header_parts(section["header"])
-        if kind == "slow_heater" and name.startswith("Vivid_"):
+        if kind in ("heater_slow", "slow_heater") and name.startswith("Vivid_"):
             active_slow.append((name, config_path))
 
 print("[INFO] Vivid heater restore complete")
@@ -260,15 +260,21 @@ for name, path in missing:
     print(f"[WARN] Config file missing for backup entry [heater_generic {name}]: {path}")
 for name, path in active_slow:
     if all(name != restored_name or path != restored_path for restored_name, restored_path, _ in restored):
-        print(f"[WARN] Remaining [slow_heater {name}] not covered by backup: {path}")
+        print(f"[WARN] Remaining [heater_slow {name}] not covered by backup: {path}")
 PY
 
-TARGET_MODULE="${KLIPPER_EXTRAS_DIR}/slow_heater.py"
+TARGET_MODULE="${KLIPPER_EXTRAS_DIR}/heater_slow.py"
 if [[ -e "${TARGET_MODULE}" ]]; then
     rm -f "${TARGET_MODULE}"
     info "Removed ${TARGET_MODULE}"
 else
     info "No installed module found at ${TARGET_MODULE}"
+fi
+
+LEGACY_MODULE="${KLIPPER_EXTRAS_DIR}/slow_heater.py"
+if [[ -e "${LEGACY_MODULE}" ]]; then
+    rm -f "${LEGACY_MODULE}"
+    info "Removed legacy module ${LEGACY_MODULE}"
 fi
 
 restart_klipper || true
