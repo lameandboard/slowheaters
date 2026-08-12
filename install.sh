@@ -44,7 +44,7 @@ Options:
 Behavior summary:
   - Default apply mode converts only high-confidence heater candidates.
   - --all broadens apply mode to convert every discovered candidate.
-  - --interactive asks for confirmation before conversion.
+  - --interactive shows all candidates and prompts which confidence levels to apply.
   - --discover never copies slow_heater.py, never edits config, never restarts.
   - Normal install: host restart via Moonraker (or systemctl fallback).
   - --firmware-restart: additionally issues /printer/firmware_restart so MCUs
@@ -443,6 +443,18 @@ for section in all_sections:
         confidence_level = update_confidence(confidence_level, "high")
         reasons.append(f"heater sensor_type is known slow sensor '{direct_sensor_type}'")
         linked_sensor = f"sensor_type={direct_sensor_type}"
+    elif direct_sensor_type.lower() == "temperature_combined":
+        sensor_list_val = options.get("sensor_list", "")
+        slow_in_list = [
+            tok for tok in re.split(r"[\s,]+", sensor_list_val.lower())
+            if tok in KNOWN_SLOW_SENSOR_TYPES
+        ]
+        if slow_in_list:
+            confidence_level = update_confidence(confidence_level, "high")
+            reasons.append(
+                f"temperature_combined sensor_list references slow sensor(s): {', '.join(slow_in_list)}"
+            )
+            linked_sensor = "sensor_type=temperature_combined"
 
     if kind == "heater_generic":
         slow_option_keys = sorted(set(options).intersection(SLOW_HEATER_OPTION_KEYS))
@@ -651,22 +663,28 @@ if [[ "${DISCOVER_ONLY}" -eq 1 ]]; then
 fi
 
 if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
-    info "Running discovery scan before interactive prompt"
-    run_config_scan discover "${APPLY_POLICY}" full
-
-    if [[ "${APPLY_ALL}" -eq 1 ]]; then
-        prompt_message="Apply all discovered conversions (including low confidence)? [y/N] "
-    else
-        prompt_message="Apply high-confidence discovered conversions? [y/N] "
-    fi
-
-    read -r -p "[INFO] ${prompt_message}" confirm
-    case "${confirm}" in
-        y|Y|yes|YES)
-            info "User confirmed conversion"
+    info "Running discovery scan with all candidates"
+    # In interactive mode, always show all candidates regardless of confidence threshold
+    run_config_scan discover "all" full
+    
+    # Prompt user to choose confidence level
+    printf '\n[INFO] Which candidates would you like to convert?\n'
+    printf '[INFO]   1) High-confidence only (sensor type match)\n'
+    printf '[INFO]   2) All discovered (includes heuristic matches)\n'
+    printf '[INFO]   3) Cancel (no changes)\n'
+    read -r -p "[INFO] Choose [1-3]: " choice
+    
+    case "${choice}" in
+        1)
+            info "User selected: high-confidence conversions"
+            APPLY_POLICY="high"
+            ;;
+        2)
+            info "User selected: all discovered conversions"
+            APPLY_POLICY="all"
             ;;
         *)
-            info "User declined conversion; exiting with no changes"
+            info "User cancelled; exiting with no changes"
             exit 0
             ;;
     esac
@@ -680,7 +698,7 @@ else
     if printf '%s\n' "${scan_output}" | grep -q "eligible_conversions=0 existing_slow=0"; then
         warn "No eligible slow_heater conversions were found under the current apply policy."
         warn "The slow_heater module has NOT been installed and Klipper has not been restarted."
-        warn "To include lower-confidence candidates, re-run with: ./install.sh --interactive --all"
+        warn "To include lower-confidence candidates, re-run with: ./install.sh --interactive"
         exit 0
     fi
 fi
@@ -689,11 +707,7 @@ mkdir -p "${BACKUPS_DIR}"
 cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/slow_heater.py"
 info "Copied module to ${KLIPPER_EXTRAS_DIR}/slow_heater.py"
 
-if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
-    run_config_scan apply "${APPLY_POLICY}" summary
-else
-    run_config_scan apply "${APPLY_POLICY}" full
-fi
+run_config_scan apply "${APPLY_POLICY}" full
 
 restart_klipper || true
 info "Install complete"
