@@ -108,9 +108,13 @@ SSH into your Klipper host and clone the repository:
 
 ```bash
 cd ~
-git clone https://github.com/lameandboard/slowheaters.git
-cd ~/slowheaters
-bash install.sh
+if [ -d "slowheaters/.git" ]; then
+  git -C slowheaters pull
+else
+  git clone https://github.com/lameandboard/slowheaters.git slowheaters
+fi
+cd slowheaters
+./install.sh --interactive
 ```
 
 Common options:
