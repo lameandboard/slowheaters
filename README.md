@@ -1,8 +1,26 @@
 # slowheaters
 
-`slowheaters` adds a Klipper `heater_slow` extra for slow-reporting sensors such as Vivid dryer sensors. It keeps Klipper's normal heater behavior and only changes the heater-output refresh path so the MCU watchdog is refreshed safely between slow temperature reports.
+## ⚠️ DISCLAIMER: USE AT YOUR OWN RISK
 
-> **⚠️ Breaking change (v2+):** The config section type was renamed from `slow_heater` to `heater_slow`. Existing `[slow_heater <name>]` sections must be updated to `[heater_slow <name>]`. Re-running `install.sh` will automatically migrate any remaining `[slow_heater ...]` sections in your config.
+**This project modifies critical heater control functionality in Klipper. Improper configuration or malfunction could result in:**
+- **Fire hazard** — uncontrolled heating could ignite printer components, nearby materials, or your printer itself
+- **Equipment damage** — thermal runaway or sensor failures may destroy heating elements and controllers
+- **Personal injury** — severe burns or property damage from overheating equipment
+
+**By using this project, you assume ALL risk.** The authors provide NO WARRANTY, GUARANTEE, or ASSUMPTION OF LIABILITY for any damage, injury, or loss that occurs. You are solely responsible for:
+- Thoroughly understanding how this modification works before installation
+- Configuring conservative safety limits (e.g., `max_power`, sensor timeouts)
+- Testing in a safe, attended environment with close monitoring
+- Installing proper thermal cutoff and monitoring systems
+- Having a fire extinguisher nearby during testing and operation
+
+**This is experimental software.** Use only on printers you can actively supervise. Do NOT rely on this for unattended operation until you have extensively validated safety.
+
+---
+
+`slowheaters` adds a Klipper `heater_slow` extra for slow-reporting sensors such as Vivid dryer sensors. It keeps Klipper's normal heater behavior and only changes the heater-output refresh path so[...]
+
+> **⚠️ Breaking change (v2+):** The config section type was renamed from `slow_heater` to `heater_slow`. Existing `[slow_heater <name>]` sections must be updated to `[heater_slow <name>]`. Re-r[...]
 
 ## Repository layout
 
@@ -79,16 +97,16 @@ Slow-heater settings:
 - `[heater_slow <name>]` is still the required config section for slow-sensor-safe control.
 - For UI compatibility, the same object is also published as `heater_generic <name>`, so Mainsail/Fluidd can show target controls.
 - This alias does **not** switch to regular heater behavior: control still goes through HeaterSlow's independent refresh timer and stale-sensor cutoff.
-- `get_status()` explicitly includes `max_temp` and `min_temp` so Moonraker can forward the correct temperature range to the frontend. Without this, Mainsail cannot find the limits from the configfile (because the config section is named `[heater_slow ...]`, not `[heater_generic ...]`) and falls back to **max_temp = 0**, blocking any positive target input.
+- `get_status()` explicitly includes `max_temp` and `min_temp` so Moonraker can forward the correct temperature range to the frontend. Without this, Mainsail cannot find the limits from the config[...]
 - Frontends usually show only standard heater fields (`temperature`, `target`, `power`). Slow-heater internals are available in Klipper status/output:
-  - `heater_slow_active`
-  - `requested_power`
-  - `refreshed_power`
-  - `sensor_age`
-  - `refresh_time`
-  - `max_mcu_duration`
-  - `sensor_timeout`
-  - `schedule_lead_time`
+   - `heater_slow_active`
+   - `requested_power`
+   - `refreshed_power`
+   - `sensor_age`
+   - `refresh_time`
+   - `max_mcu_duration`
+   - `sensor_timeout`
+   - `schedule_lead_time`
 
 ### Overshoot protection
 
@@ -159,9 +177,9 @@ Recommendation: always review the proposed conversions before applying, especial
 
 Migration/backward-compatibility note:
 
-- If a `[heater_generic ...]` section already contains slow-heater-only options (`refresh_time`, `max_mcu_duration`, `sensor_timeout`, `schedule_lead_time`), the installer now treats it as high-confidence and converts it to `[heater_slow ...]` automatically.
+- If a `[heater_generic ...]` section already contains slow-heater-only options (`refresh_time`, `max_mcu_duration`, `sensor_timeout`, `schedule_lead_time`), the installer now treats it as high-c[...]
 - Existing `[heater_slow ...]` sections remain supported; installer runs continue to be idempotent and only add missing defaults.
-- **Migrating from `[slow_heater ...]`:** If your config still has `[slow_heater <name>]` sections from a previous install, re-running `install.sh` will automatically detect and rename them to `[heater_slow <name>]`. No manual editing is required.
+- **Migrating from `[slow_heater ...]`:** If your config still has `[slow_heater <name>]` sections from a previous install, re-running `install.sh` will automatically detect and rename them to `[[...]
 
 ## Uninstall
 
@@ -181,7 +199,7 @@ Running uninstall again is also safe as long as a backup file still exists.
 
 ## Moonraker Update Manager
 
-`install.sh` automatically adds a `[update_manager slowheaters]` block to your Moonraker config so you can update `slowheaters` directly from Mainsail or Fluidd without running `git pull` manually.
+`install.sh` automatically adds a `[update_manager slowheaters]` block to your Moonraker config so you can update `slowheaters` directly from Mainsail or Fluidd without running `git pull` manuall[...]
 
 The block is written between marker comments:
 
