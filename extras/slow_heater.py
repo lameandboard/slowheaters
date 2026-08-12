@@ -75,10 +75,8 @@ class SlowHeater(heaters.Heater):
         # doesn't expose heater-specific limits. Explicitly read them from config
         # if present, overriding the sensor defaults. This ensures Mainsail/Fluidd
         # can set target temperatures correctly.
-        if config.has_option('min_temp'):
-            self.min_temp = config.getfloat('min_temp')
-        if config.has_option('max_temp'):
-            self.max_temp = config.getfloat('max_temp')
+        self.min_temp = config.getfloat('min_temp', default=0.0)
+        self.max_temp = config.getfloat('max_temp', default=250.0)
 
         self._reactor = self.printer.get_reactor()
         self._refresh_timer = self._reactor.register_timer(self._refresh_event)
