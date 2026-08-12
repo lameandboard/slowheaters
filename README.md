@@ -179,6 +179,38 @@ The uninstall script:
 
 Running uninstall again is also safe as long as a backup file still exists.
 
+## Moonraker Update Manager
+
+`install.sh` automatically adds a `[update_manager slowheaters]` block to your Moonraker config so you can update `slowheaters` directly from Mainsail or Fluidd without running `git pull` manually.
+
+The block is written between marker comments:
+
+```ini
+# >>> slowheaters update-manager >>>
+[update_manager slowheaters]
+type: git_repo
+path: ~/slowheaters
+origin: https://github.com/lameandboard/slowheaters.git
+primary_branch: main
+managed_services: klipper
+install_script: install.sh
+# <<< slowheaters update-manager <<<
+```
+
+The install is **idempotent** — re-running `install.sh` will not duplicate the entry.
+
+`uninstall.sh` removes exactly this block and leaves all other Moonraker config entries untouched.
+
+**Default Moonraker config path:** `~/printer_data/config/moonraker.conf`
+
+To override the path set the `MOONRAKER_CONF` environment variable before running either script:
+
+```bash
+MOONRAKER_CONF=/path/to/moonraker.conf bash install.sh
+```
+
+If the file does not exist at the configured path the block is silently skipped.
+
 ## Update
 
 ```bash

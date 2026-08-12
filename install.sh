@@ -10,6 +10,7 @@ KLIPPER_CONFIG="${KLIPPER_CONFIG:-${HOME}/printer_data/config/printer.cfg}"
 KLIPPER_EXTRAS_DIR="${KLIPPER_EXTRAS_DIR:-${HOME}/klipper/klippy/extras}"
 KLIPPER_SERVICE="${KLIPPER_SERVICE:-klipper}"
 MOONRAKER_URL="${MOONRAKER_URL:-http://localhost:7125}"
+MOONRAKER_CONF="${MOONRAKER_CONF:-${HOME}/printer_data/config/moonraker.conf}"
 
 NO_RESTART=0
 FIRMWARE_RESTART=0
@@ -30,6 +31,7 @@ Environment overrides:
   KLIPPER_EXTRAS_DIR  Path to klippy/extras (default: ~/klipper/klippy/extras)
   KLIPPER_SERVICE     Klipper system service name (default: klipper)
   MOONRAKER_URL       Moonraker base URL used for restart (default: http://localhost:7125)
+  MOONRAKER_CONF      Path to Moonraker config for update-manager entry (default: ~/printer_data/config/moonraker.conf)
 
 Options:
   --discover          Scan and report candidate heaters only (no config/module/restart changes)
@@ -132,6 +134,52 @@ firmware_restart_klipper() {
     warn "Could not issue firmware restart automatically"
     warn "Run FIRMWARE_RESTART from your Klipper UI (Mainsail/Fluidd console) to reset MCU state"
     return 1
+}
+
+_SLOWHEATERS_BEGIN_MARKER="# >>> slowheaters update-manager >>>"
+_SLOWHEATERS_END_MARKER="# <<< slowheaters update-manager <<<"
+
+remove_moonraker_block() {
+    local cfg="$1"
+    [[ -f "${cfg}" ]] || return 0
+    local tmp
+    tmp="$(mktemp "${cfg}.XXXXXX")"
+    if awk -v b="${_SLOWHEATERS_BEGIN_MARKER}" -v e="${_SLOWHEATERS_END_MARKER}" '
+        $0==b {skip=1; next}
+        $0==e {skip=0; next}
+        !skip {print}
+    ' "${cfg}" > "${tmp}"; then
+        mv "${tmp}" "${cfg}"
+    else
+        rm -f "${tmp}"
+        warn "Failed to rewrite ${cfg}; leaving original unchanged"
+    fi
+}
+
+add_moonraker_block() {
+    local cfg="$1"
+    if [[ ! -f "${cfg}" ]]; then
+        warn "Moonraker config not found at ${cfg}; skipping update-manager entry"
+        warn "Set MOONRAKER_CONF to your moonraker.conf path and re-run install.sh to add it later"
+        return 0
+    fi
+    if ! grep -Fq "${_SLOWHEATERS_BEGIN_MARKER}" "${cfg}"; then
+        info "Adding slowheaters update-manager block to ${cfg}"
+        {
+            printf '\n'
+            printf '%s\n' "${_SLOWHEATERS_BEGIN_MARKER}"
+            printf '[update_manager slowheaters]\n'
+            printf 'type: git_repo\n'
+            printf 'path: ~/slowheaters\n'
+            printf 'origin: https://github.com/lameandboard/slowheaters.git\n'
+            printf 'primary_branch: main\n'
+            printf 'managed_services: klipper\n'
+            printf 'install_script: install.sh\n'
+            printf '%s\n' "${_SLOWHEATERS_END_MARKER}"
+        } >> "${cfg}"
+    else
+        info "slowheaters update-manager block already present in ${cfg}"
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -708,6 +756,9 @@ cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/heater_slow.py"
 info "Copied module to ${KLIPPER_EXTRAS_DIR}/heater_slow.py"
 
 run_config_scan apply "${APPLY_POLICY}" full
+
+remove_moonraker_block "${MOONRAKER_CONF}"
+add_moonraker_block "${MOONRAKER_CONF}"
 
 restart_klipper || true
 info "Install complete"
