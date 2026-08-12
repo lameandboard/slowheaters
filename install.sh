@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_MODULE="${REPO_DIR}/extras/slow_heater.py"
+REPO_MODULE="${REPO_DIR}/extras/heater_slow.py"
 BACKUPS_DIR="${REPO_DIR}/backups"
 
 KLIPPER_CONFIG="${KLIPPER_CONFIG:-${HOME}/printer_data/config/printer.cfg}"
@@ -45,7 +45,7 @@ Behavior summary:
   - Default apply mode converts only high-confidence heater candidates.
   - --all broadens apply mode to convert every discovered candidate.
   - --interactive shows all candidates and prompts which confidence levels to apply.
-  - --discover never copies slow_heater.py, never edits config, never restarts.
+  - --discover never copies heater_slow.py, never edits config, never restarts.
   - Normal install: host restart via Moonraker (or systemctl fallback).
   - --firmware-restart: additionally issues /printer/firmware_restart so MCUs
     reload config (mirrors the two-step restart used by the RFID project).
@@ -383,8 +383,8 @@ def section_output(lines: list[str], start: int, end: int, kind: str, name: str)
     additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys]
 
     changed = False
-    new_lines = [f"[slow_heater {name}]\n"] + body
-    if kind != "slow_heater":
+    new_lines = [f"[heater_slow {name}]\n"] + body
+    if kind != "heater_slow":
         changed = True
     if additions:
         changed = True
@@ -429,7 +429,7 @@ for section in all_sections:
 candidate_heaters: list[dict[str, object]] = []
 for section in all_sections:
     kind = str(section["kind"])
-    if kind not in {"heater_generic", "slow_heater"}:
+    if kind not in {"heater_generic", "slow_heater", "heater_slow"}:
         continue
 
     name = str(section["name"])
@@ -461,7 +461,7 @@ for section in all_sections:
         if slow_option_keys:
             confidence_level = update_confidence(confidence_level, "high")
             reasons.append(
-                "heater_generic already contains slow_heater-only option(s): "
+                "heater_generic already contains heater_slow-only option(s): "
                 + ", ".join(slow_option_keys)
             )
 
@@ -549,7 +549,7 @@ below_threshold_candidates = [
     heater for heater in candidate_heaters
     if heater["kind"] == "heater_generic" and int(heater["confidence_level"]) < threshold
 ]
-existing_slow = [heater for heater in candidate_heaters if heater["kind"] == "slow_heater"]
+existing_slow = [heater for heater in candidate_heaters if heater["kind"] in ("heater_slow", "slow_heater")]
 
 print(
     "[INFO] Discovery summary: "
@@ -578,7 +578,7 @@ for heater in candidate_heaters:
     end = int(heater["end"])
 
     should_update = False
-    if kind == "slow_heater":
+    if kind in ("heater_slow", "slow_heater"):
         should_update = True
     elif kind == "heater_generic" and int(heater["confidence_level"]) >= threshold:
         should_update = True
@@ -588,8 +588,8 @@ for heater in candidate_heaters:
 
     original, replacement, changed, added_count = section_output(lines, start, end, kind, name)
 
-    if kind == "heater_generic":
-        converted.append((name, path))
+    if kind in ("heater_generic", "slow_heater"):
+        converted.append((name, path, kind))
         backup_sections.append(
             {
                 "file": str(path),
@@ -620,7 +620,7 @@ for path, replacements in per_file.items():
 backup_path = None
 if backup_sections:
     backups_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backups_dir / f"slow_heater_sections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+    backup_path = backups_dir / f"heater_slow_sections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
     backup_path.write_text(
         json.dumps(
             {
@@ -634,19 +634,19 @@ if backup_sections:
     )
 
 print("[INFO] Conversion run complete")
-for name, path in converted:
-    print(f"[INFO] Converted [heater_generic {name}] -> [slow_heater {name}] in {path}")
+for name, path, orig_kind in converted:
+    print(f"[INFO] Converted [{orig_kind} {name}] -> [heater_slow {name}] in {path}")
 for name, path in already_slow:
-    print(f"[INFO] Found existing [slow_heater {name}] in {path}")
+    print(f"[INFO] Found existing [heater_slow {name}] in {path}")
 if defaults_added:
-    print(f"[INFO] Added {defaults_added} missing slow_heater default setting(s)")
+    print(f"[INFO] Added {defaults_added} missing heater_slow default setting(s)")
 if backup_path is not None:
     print(f"[INFO] Backed up original converted sections to {backup_path}")
 if below_threshold_candidates and apply_policy != "all":
     print("[WARN] Skipped below-threshold heater_generic candidates under default apply policy")
     print("[WARN] Re-run with --interactive --all after review if you want to convert them")
 if not per_file:
-    print("[INFO] Config already matched the expected slow_heater layout for the selected candidates")
+    print("[INFO] Config already matched the expected heater_slow layout for the selected candidates")
 PY
 }
 
@@ -696,16 +696,16 @@ else
     printf '%s\n' "${scan_output}"
 
     if printf '%s\n' "${scan_output}" | grep -q "eligible_conversions=0 existing_slow=0"; then
-        warn "No eligible slow_heater conversions were found under the current apply policy."
-        warn "The slow_heater module has NOT been installed and Klipper has not been restarted."
+        warn "No eligible heater_slow conversions were found under the current apply policy."
+        warn "The heater_slow module has NOT been installed and Klipper has not been restarted."
         warn "To include lower-confidence candidates, re-run with: ./install.sh --interactive"
         exit 0
     fi
 fi
 
 mkdir -p "${BACKUPS_DIR}"
-cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/slow_heater.py"
-info "Copied module to ${KLIPPER_EXTRAS_DIR}/slow_heater.py"
+cp "${REPO_MODULE}" "${KLIPPER_EXTRAS_DIR}/heater_slow.py"
+info "Copied module to ${KLIPPER_EXTRAS_DIR}/heater_slow.py"
 
 run_config_scan apply "${APPLY_POLICY}" full
 

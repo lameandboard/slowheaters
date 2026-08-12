@@ -6,7 +6,7 @@ import unittest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-MODULE_PATH = REPO_ROOT / "extras" / "slow_heater.py"
+MODULE_PATH = REPO_ROOT / "extras" / "heater_slow.py"
 
 
 class FakeMCU:
@@ -124,7 +124,7 @@ def load_module():
             self.max_power = 1.0
             self.last_pwm_value = 0.0
             self.last_temp_time = 0.0
-            # Klipper Heater sets these from config; expose them so SlowHeater
+            # Klipper Heater sets these from config; expose them so HeaterSlow
             # can include them in get_status() for Mainsail temperature limits.
             self.last_temp = 0.0
             self.min_temp = 0.0
@@ -143,19 +143,19 @@ def load_module():
     heaters_mod.Heater = Heater
     sys.modules["extras.heaters"] = heaters_mod
 
-    spec = importlib.util.spec_from_file_location("extras.slow_heater", MODULE_PATH)
+    spec = importlib.util.spec_from_file_location("extras.heater_slow", MODULE_PATH)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["extras.slow_heater"] = module
+    sys.modules["extras.heater_slow"] = module
     spec.loader.exec_module(module)
     return module
 
 
-class SlowHeaterRegressionTests(unittest.TestCase):
+class HeaterSlowRegressionTests(unittest.TestCase):
     def setUp(self):
         self.module = load_module()
         self.printer = FakePrinter()
-        self.config = FakeConfig("slow_heater chamber", self.printer)
-        self.heater = self.module.SlowHeater(self.config, sensor=object())
+        self.config = FakeConfig("heater_slow chamber", self.printer)
+        self.heater = self.module.HeaterSlow(self.config, sensor=object())
 
     def test_set_pwm_does_not_directly_write_mcu_output(self):
         self.heater.target_temp = 60.0
@@ -190,7 +190,7 @@ class SlowHeaterRegressionTests(unittest.TestCase):
         self.assertEqual(pwm, 0.0)
         self.assertEqual(self.heater.requested_pwm, 0.0)
 
-    def test_load_config_prefix_keeps_slow_heater_and_adds_ui_alias(self):
+    def test_load_config_prefix_registers_heater_slow_and_adds_ui_alias(self):
         pheaters = FakeHeatersManager()
         self.printer.heaters_obj = pheaters
 
@@ -200,14 +200,14 @@ class SlowHeaterRegressionTests(unittest.TestCase):
         self.assertIs(heater, self.printer.objects["heater_generic chamber"])
         self.assertIn("heater_generic chamber", pheaters.available_heaters)
         status = heater.get_status(0.0)
-        self.assertTrue(status["slow_heater_active"])
+        self.assertTrue(status["heater_slow_active"])
 
     def test_status_exposes_temperature_limits_for_mainsail(self):
         # Root cause of "max temp is 0" in Mainsail: the printer object is
         # registered as "heater_generic <name>" but the Klipper configfile
-        # section is "[slow_heater <name>]".  Mainsail cannot find max_temp
+        # section is "[heater_slow <name>]".  Mainsail cannot find max_temp
         # from the configfile for that alias, so it falls back to 0 and
-        # rejects any positive target.  SlowHeater.get_status() must expose
+        # rejects any positive target.  HeaterSlow.get_status() must expose
         # max_temp and min_temp directly so Moonraker can forward them.
         self.heater.max_temp = 80.0
         self.heater.min_temp = 5.0
