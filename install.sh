@@ -3,7 +3,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_MODULE="${REPO_DIR}/heater_slow/heater_slow.py"
+REPO_MODULE="${REPO_DIR}/extras/heater_slow.py"
 BACKUPS_DIR="${REPO_DIR}/backups"
 
 KLIPPER_CONFIG="${KLIPPER_CONFIG:-${HOME}/printer_data/config/printer.cfg}"

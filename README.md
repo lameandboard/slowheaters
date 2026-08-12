@@ -6,7 +6,7 @@
 
 ## Repository layout
 
-- `/heater_slow/heater_slow.py` - the Klipper extra installed by `install.sh`
+- `/extras/heater_slow.py` - the Klipper extra installed by `install.sh`
 - `/install.sh` - installs the extra and discovers/converts matching slow-sensor heaters
 - `/uninstall.sh` - restores the most recent backed-up converted sections
 - `/backups/` - created by the installer for timestamped converted-section backups
@@ -15,7 +15,7 @@
 
 `install.sh` follows the same workflow pattern as the RFID project:
 
-1. Validates `heater_slow/heater_slow.py`
+1. Validates `extras/heater_slow.py`
 2. Scans the full Klipper config tree starting from `printer.cfg`, including `[include ...]` files
 3. Builds heater candidates from:
    - known slow sensor type matches (`aht10`, `aht20`, `aht3x`)
@@ -188,7 +188,7 @@ bash install.sh
 Validate the Klipper extra syntax:
 
 ```bash
-python3 -m py_compile heater_slow/heater_slow.py
+python3 -m py_compile extras/heater_slow.py
 ```
 
 Validate the shell scripts:
