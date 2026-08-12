@@ -9,6 +9,7 @@ KLIPPER_CONFIG="${KLIPPER_CONFIG:-${HOME}/printer_data/config/printer.cfg}"
 KLIPPER_EXTRAS_DIR="${KLIPPER_EXTRAS_DIR:-${HOME}/klipper/klippy/extras}"
 KLIPPER_SERVICE="${KLIPPER_SERVICE:-klipper}"
 MOONRAKER_URL="${MOONRAKER_URL:-http://localhost:7125}"
+MOONRAKER_CONF="${MOONRAKER_CONF:-${HOME}/printer_data/config/moonraker.conf}"
 
 NO_RESTART=0
 
@@ -25,6 +26,7 @@ Environment overrides:
   KLIPPER_EXTRAS_DIR  Path to klippy/extras (default: ~/klipper/klippy/extras)
   KLIPPER_SERVICE     Klipper system service name (default: klipper)
   MOONRAKER_URL       Moonraker base URL used for restart fallback (default: http://localhost:7125)
+  MOONRAKER_CONF      Path to Moonraker config for update-manager removal (default: ~/printer_data/config/moonraker.conf)
 
 Options:
   --no-restart        Do not restart Klipper after uninstall
@@ -74,6 +76,24 @@ restart_klipper() {
 
     warn "Could not restart Klipper automatically; please restart ${KLIPPER_SERVICE} manually"
     return 1
+}
+
+_SLOWHEATERS_BEGIN_MARKER="# >>> slowheaters update-manager >>>"
+_SLOWHEATERS_END_MARKER="# <<< slowheaters update-manager <<<"
+
+remove_moonraker_block() {
+    local cfg="$1"
+    [[ -f "${cfg}" ]] || return 0
+    if grep -Fq "${_SLOWHEATERS_BEGIN_MARKER}" "${cfg}"; then
+        info "Removing slowheaters update-manager block from ${cfg}"
+        awk -v b="${_SLOWHEATERS_BEGIN_MARKER}" -v e="${_SLOWHEATERS_END_MARKER}" '
+            $0==b {skip=1; next}
+            $0==e {skip=0; next}
+            !skip {print}
+        ' "${cfg}" > "${cfg}.tmp" && mv "${cfg}.tmp" "${cfg}"
+    else
+        info "No slowheaters update-manager block found in ${cfg}; nothing to remove"
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -276,6 +296,8 @@ if [[ -e "${LEGACY_MODULE}" ]]; then
     rm -f "${LEGACY_MODULE}"
     info "Removed legacy module ${LEGACY_MODULE}"
 fi
+
+remove_moonraker_block "${MOONRAKER_CONF}"
 
 restart_klipper || true
 info "Uninstall complete"
