@@ -416,32 +416,25 @@ def confidence_label_from_reasons(level: int) -> str:
 
 def section_output(lines: list[str], start: int, end: int, kind: str, name: str) -> tuple[str, list[str], bool, int]:
     original = "".join(lines[start:end])
-    body = list(lines[start + 1:end])
+    body = lines[start + 1:end]
+    original_keys = {
+        match.group(1).strip().lower()
+        for line in body
+        if (match := option_re.match(line))
+    }
+    additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys]
 
-    # Detect actual config options in this section.
-    key_to_index: dict[str, int] = {}
-    for idx, line in enumerate(body):
-        match = option_re.match(line)
-        if not match:
-            continue
-        key_to_index[match.group(1).strip().lower()] = idx
-
-    changed = (kind != "heater_slow")
-    added_count = 0
-
-    # Always normalize the section header to heater_slow.
+    changed = False
     new_lines = [f"[heater_slow {name}]\n"] + body
-
-    # Guarantee the required slow-heater max_duration option exists.
-    if "max_duration" not in key_to_index:
-        # Ensure a clean newline before appending.
-        if len(new_lines) > 1 and new_lines[-1].strip():
-            new_lines.append("\n")
-        new_lines.append("max_duration: 10.0\n")
+    if kind != "heater_slow":
         changed = True
-        added_count += 1
+    if additions:
+        changed = True
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("\n")
+        new_lines.extend(additions)
 
-    return original, new_lines, changed, added_count
+    return original, new_lines, changed, len(additions)
 
 
 config_paths = collect_config_paths(root_config)
@@ -486,11 +479,6 @@ for section in all_sections:
     confidence_level = 0
     reasons: list[str] = []
     linked_sensor = ""
-
-    # Existing heater_slow sections are always managed by this installer.
-    if kind == "heater_slow":
-        confidence_level = update_confidence(confidence_level, "high")
-        reasons.append("existing heater_slow section")
 
     direct_sensor_type = options.get("sensor_type", "").strip()
     if direct_sensor_type and direct_sensor_type.lower() in KNOWN_SLOW_SENSOR_TYPES:
@@ -672,19 +660,83 @@ for path, replacements in per_file.items():
     path.write_text("".join(lines), encoding="utf-8")
 
 
-# Verify that every selected heater_slow section now has max_duration.
-for path in per_file:
-    verify_lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    for section in parse_sections(verify_lines):
+# -------------------------------------------------------------------------
+# GUARANTEED heater_slow defaults pass
+#
+# Do not rely on discovery/conversion bookkeeping for required plugin
+# settings. Re-read every config file after all header conversions and make
+# sure every [heater_slow ...] section contains max_duration.
+# -------------------------------------------------------------------------
+guaranteed_defaults_added = 0
+
+for config_path in config_paths:
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    sections = parse_sections(lines)
+    inserts: list[tuple[int, str]] = []
+
+    for section in sections:
         header = str(section["header"])
-        vkind, vname = split_header(header)
-        if vkind != "heater_slow":
+        kind, name = split_header(header)
+
+        if kind != "heater_slow":
             continue
-        opts = parse_options(
-            verify_lines, int(section["start"]), int(section["end"]))
-        if "max_duration" not in opts:
-            raise SystemExit(
-                f"[ERROR] [{header}] is missing max_duration after rewrite in {path}")
+
+        start_idx = int(section["start"])
+        end_idx = int(section["end"])
+        options = parse_options(lines, start_idx, end_idx)
+
+        if "max_duration" in options:
+            continue
+
+        # Insert immediately before the next section. Add a blank line first
+        # only when the previous line is nonblank.
+        insertion = "max_duration: 10.0\n"
+        if end_idx > start_idx + 1 and lines[end_idx - 1].strip():
+            insertion = "\n" + insertion
+
+        inserts.append((end_idx, insertion))
+
+    # Reverse order preserves all earlier line indexes.
+    for insert_at, insertion in sorted(inserts, reverse=True):
+        lines[insert_at:insert_at] = [insertion]
+        guaranteed_defaults_added += 1
+
+    if inserts:
+        config_path.write_text("".join(lines), encoding="utf-8")
+        print(
+            f"[INFO] Guaranteed max_duration for {len(inserts)} "
+            f"heater_slow section(s) in {config_path}"
+        )
+
+# Hard verification: installation must fail if any heater_slow section is
+# still missing max_duration after the guaranteed pass.
+missing_max_duration: list[str] = []
+
+for config_path in config_paths:
+    lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    for section in parse_sections(lines):
+        header = str(section["header"])
+        kind, name = split_header(header)
+        if kind != "heater_slow":
+            continue
+
+        options = parse_options(
+            lines, int(section["start"]), int(section["end"])
+        )
+        if "max_duration" not in options:
+            missing_max_duration.append(f"{config_path}: [{header}]")
+
+if missing_max_duration:
+    print("[ERROR] The following heater_slow sections are missing max_duration:")
+    for item in missing_max_duration:
+        print(f"[ERROR]   {item}")
+    raise SystemExit(1)
+
+if guaranteed_defaults_added:
+    print(
+        f"[INFO] Guaranteed pass added max_duration: 10.0 to "
+        f"{guaranteed_defaults_added} heater_slow section(s)"
+    )
 
 backup_path = None
 if backup_sections:
