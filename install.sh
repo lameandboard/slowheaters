@@ -422,7 +422,7 @@ def section_output(lines: list[str], start: int, end: int, kind: str, name: str)
         for line in body
         if (match := option_re.match(line))
     }
-    additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys] if kind == "heater_generic" else []
+    additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys]
 
     changed = False
     new_lines = [f"[heater_slow {name}]\n"] + body
