@@ -17,17 +17,41 @@ It behaves exactly like a normal Klipper heater, with one additional option: `ma
 
 ## Install
 
-1. Copy `heater_slow.py` into your Klipper `klippy/extras/` directory:
+Clone the repository and run the install script:
 
-   ```bash
-   cp extras/heater_slow.py ~/klipper/klippy/extras/heater_slow.py
-   ```
+```bash
+cd ~
+git clone https://github.com/lameandboard/slowheaters.git slowheaters
+cd slowheaters
+bash install.sh
+```
 
-2. Restart Klipper:
+The script copies `heater_slow.py` into `~/klipper/klippy/extras/` and restarts Klipper.
 
-   ```bash
-   sudo systemctl restart klipper
-   ```
+**Options:**
+
+```bash
+# Skip the Klipper restart (restart manually afterwards)
+bash install.sh --no-restart
+```
+
+**Environment overrides:**
+
+```bash
+KLIPPER_EXTRAS_DIR=~/klipper/klippy/extras \
+KLIPPER_SERVICE=klipper \
+bash install.sh
+```
+
+## Uninstall
+
+```bash
+cd ~/slowheaters
+bash uninstall.sh
+```
+
+Removes `heater_slow.py` from the Klipper extras directory and restarts Klipper.
+Accepts the same `--no-restart` flag and environment overrides as `install.sh`.
 
 ## Configure
 
