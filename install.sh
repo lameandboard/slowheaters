@@ -284,7 +284,9 @@ SLOW_HEATER_OPTION_KEYS = {
     "max_duration",
 }
 
-defaults = []
+defaults = [
+    ("max_duration", "10.0"),
+]
 
 CONFIDENCE_LEVEL = {"none": 0, "low": 1, "medium": 2, "high": 3}
 CONFIDENCE_FROM_LEVEL = {value: key for key, value in CONFIDENCE_LEVEL.items()}
