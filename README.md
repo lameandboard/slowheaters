@@ -1,185 +1,65 @@
-# slowheaters
+# heater_slow
 
 ## ⚠️ DISCLAIMER: USE AT YOUR OWN RISK
 
 **This project modifies critical heater control functionality in Klipper. Improper configuration or malfunction could result in:**
-- **Fire hazard** — uncontrolled heating could ignite printer components, nearby materials, or your printer itself
-- **Equipment damage** — thermal runaway or sensor failures may destroy heating elements and controllers
-- **Personal injury** — severe burns or property damage from overheating equipment
+- **Fire hazard** — uncontrolled heating could ignite printer components or nearby materials
+- **Equipment damage** — thermal runaway or sensor failures may destroy heating elements
+- **Personal injury** — severe burns or property damage from overheating
 
-**By using this project, you assume ALL risk.** The authors provide NO WARRANTY, GUARANTEE, or ASSUMPTION OF LIABILITY for any damage, injury, or loss that occurs. You are solely responsible for:
-- Thoroughly understanding how this modification works before installation
-- Configuring conservative safety limits (e.g., `max_power`, sensor timeouts)
-- Testing in a safe, attended environment with close monitoring
-- Installing proper thermal cutoff and monitoring systems
-- Having a fire extinguisher nearby during testing and operation
-
-**This is experimental software.** Use only on printers you can actively supervise. Do NOT rely on this for unattended operation until you have extensively validated safety.
+**By using this project, you assume ALL risk.** The authors provide NO WARRANTY, GUARANTEE, or ASSUMPTION OF LIABILITY.
 
 ---
 
-`slowheaters` adds a Klipper `heater_slow` extra for slow-reporting sensors such as Vivid dryer sensors. It keeps Klipper's normal heater behavior and only changes the heater-output refresh path so[...]
+`heater_slow` is a tiny Klipper extra for slow-reporting sensors (e.g. AHT20, Vivid dryer probes).
 
-> **⚠️ Breaking change (v2+):** The config section type was renamed from `slow_heater` to `heater_slow`. Existing `[slow_heater <name>]` sections must be updated to `[heater_slow <name>]`. Re-r[...]
-
-## Repository layout
-
-- `/extras/heater_slow.py` - the Klipper extra installed by `install.sh`
-- `/install.sh` - installs the extra and discovers/converts matching slow-sensor heaters
-- `/uninstall.sh` - restores the most recent backed-up converted sections
-- `/backups/` - created by the installer for timestamped converted-section backups
-
-## What the installer does
-
-`install.sh` follows the same workflow pattern as the RFID project:
-
-1. Validates `extras/heater_slow.py`
-2. Scans the full Klipper config tree starting from `printer.cfg`, including `[include ...]` files
-3. Builds heater candidates from:
-   - known slow sensor type matches (`aht10`, `aht20`, `aht3x`)
-   - name/reference heuristics (`aht`, `vivid`, `dryer`, `chamber`)
-4. Reports candidate heater sections with confidence and reason(s)
-5. In apply mode, backs up converted sections to `backups/heater_slow_sections_YYYYMMDD_HHMMSS.json`
-6. Converts selected `[heater_generic ...]` sections to `[heater_slow ...]`
-7. Adds default slow-heater settings when missing:
-   - `refresh_time: 1.0`
-   - `max_mcu_duration: 3.0`
-   - `sensor_timeout: 15.0`
-   - `schedule_lead_time: 0.100`
-8. In apply mode, copies `heater_slow.py` and restarts Klipper through Moonraker when available, otherwise falls back to `systemctl`
-
-Running the installer again is safe: existing `heater_slow` sections are detected and only missing defaults are added.
-
-By default, apply mode converts **high-confidence** candidates only. Use `--all` to include lower-confidence matches after you review the report.
-
-## Example `[heater_slow <name>]` config
-
-Minimal section:
-
-```ini
-[heater_slow Vivid_Dryer]
-heater_pin: PB1
-sensor_type: AHT20
-sensor_pin: PA0
-control: pid
-pid_kp: 12.0
-pid_ki: 0.5
-pid_kd: 45.0
-```
-
-Tuned section:
-
-```ini
-[heater_slow Chamber_Dryer]
-heater_pin: PB1
-sensor_type: AHT20
-sensor_pin: PA0
-control: pid
-pid_kp: 12.0
-pid_ki: 0.5
-pid_kd: 45.0
-refresh_time: 1.2
-max_mcu_duration: 3.0
-sensor_timeout: 20.0
-schedule_lead_time: 0.150
-```
-
-Slow-heater settings:
-
-- `refresh_time`: how often Klipper refreshes heater output while waiting for the next sensor update.
-- `max_mcu_duration`: maximum watchdog-safe output duration scheduled on the MCU per refresh.
-- `sensor_timeout`: how old a sensor reading can be before `heater_slow` treats it as stale.
-- `schedule_lead_time`: small lead-time margin used when scheduling refreshes so updates land safely before deadlines.
-- Standard Klipper heater options like `max_power` still apply and are the preferred way to cap heater duty if you also want a slower ramp.
-
-## Mainsail / Fluidd behavior
-
-- `[heater_slow <name>]` is still the required config section for slow-sensor-safe control.
-- For UI compatibility, the same object is also published as `heater_generic <name>`, so Mainsail/Fluidd can show target controls.
-- This alias does **not** switch to regular heater behavior: control still goes through HeaterSlow's independent refresh timer and stale-sensor cutoff.
-- `get_status()` explicitly includes `max_temp` and `min_temp` so Moonraker can forward the correct temperature range to the frontend. Without this, Mainsail cannot find the limits from the config[...]
-- Frontends usually show only standard heater fields (`temperature`, `target`, `power`). Slow-heater internals are available in Klipper status/output:
-   - `heater_slow_active`
-   - `requested_power`
-   - `refreshed_power`
-   - `sensor_age`
-   - `refresh_time`
-   - `max_mcu_duration`
-   - `sensor_timeout`
-   - `schedule_lead_time`
-
-### Overshoot protection
-
-Slow sensors report temperature only every few seconds.  During that interval
-the refresh timer would otherwise keep replaying the last PID output even after
-the temperature has already reached the target, causing overshoot that can trip
-Klipper's `max_temp` shutdown ("temp too high").
-
-`heater_slow` guards against this: if `last_temp >= target_temp` at refresh
-time, PWM is cut to zero immediately.  PID resumes sending positive output via
-`set_pwm()` as soon as the sensor reports the temperature has dropped back below
-target.
+It behaves exactly like a normal Klipper heater, with one additional option: `max_duration`, which extends the MCU PWM watchdog window so the MCU does not cut heater output between slow sensor reports.
 
 ## Install
 
-SSH into your Klipper host and clone the repository:
+Clone the repository and run the install script:
 
 ```bash
 cd ~
-if [ -d "slowheaters/.git" ]; then
-  git -C slowheaters pull
-else
-  git clone https://github.com/lameandboard/slowheaters.git slowheaters
-fi
+git clone https://github.com/lameandboard/slowheaters.git slowheaters
 cd slowheaters
-./install.sh --interactive
+bash install.sh --interactive
 ```
 
-Common options:
+The installer will:
+1. Scan your full Klipper config tree for slow-sensor heater candidates
+2. Show a discovery report with confidence and reasons
+3. Prompt you before converting any `[heater_generic X]` sections to `[heater_slow X]`
+4. Back up converted sections to `backups/`
+5. Copy `heater_slow.py` into `klippy/extras/`
+6. Add a `[update_manager slowheaters]` block to `moonraker.conf`
+7. Restart Klipper
+
+**Common options:**
 
 ```bash
-# Report-only scan. No module copy, no config changes, no restart.
+# Report-only scan — no changes, no restart
 bash install.sh --discover
 
-# Review report, then prompt before applying high-confidence conversions.
+# Show report and prompt before applying (recommended first run)
 bash install.sh --interactive
 
-# Apply all discovered candidates non-interactively (including low confidence).
+# Apply all discovered candidates non-interactively
 bash install.sh --all
+
+# Skip Klipper restart
+bash install.sh --no-restart
 ```
 
-Optional environment overrides:
+**Environment overrides:**
 
 ```bash
 KLIPPER_CONFIG=~/printer_data/config/printer.cfg \
 KLIPPER_EXTRAS_DIR=~/klipper/klippy/extras \
 KLIPPER_SERVICE=klipper \
+MOONRAKER_CONF=~/printer_data/config/moonraker.conf \
 bash install.sh
 ```
-
-Use `--no-restart` if you want to restart Klipper manually.
-
-## Discovery and interactive safety model
-
-Detection uses two confidence levels of evidence:
-
-- **High confidence**:
-  - exact known slow sensor type matches: `aht10`, `aht20`, `aht3x`
-  - directly in heater options (for example `sensor_type`) or in linked sensor sections
-- **Heuristics (medium/low confidence)**:
-  - heater/sensor/section names or references containing tokens: `aht`, `vivid`, `dryer`, `chamber`
-
-`--discover` always prints a candidate report with file path, heater section name, current kind, linked sensor reference (when known), reason(s), and confidence.
-
-In interactive mode (`--interactive`), the report is shown first and you are prompted before any conversion is applied. If you decline, installer exits cleanly with no changes.
-
-Recommendation: always review the proposed conversions before applying, especially when heuristic/low-confidence matches are present.
-
-Migration/backward-compatibility note:
-
-- If a `[heater_generic ...]` section already contains slow-heater-only options (`refresh_time`, `max_mcu_duration`, `sensor_timeout`, `schedule_lead_time`), the installer now treats it as high-c[...]
-- Existing `[heater_slow ...]` sections remain supported; installer runs continue to be idempotent and only add missing defaults.
-- **Migrating from `[slow_heater ...]`:** If your config still has `[slow_heater <name>]` sections from a previous install, re-running `install.sh` will automatically detect and rename them to `[[...]
 
 ## Uninstall
 
@@ -189,19 +69,16 @@ bash uninstall.sh
 ```
 
 The uninstall script:
+- Restores the original `[heater_generic X]` sections from the most recent backup
+- Removes `heater_slow.py` from Klipper extras
+- Removes the `[update_manager slowheaters]` block from `moonraker.conf`
+- Restarts Klipper
 
-- locates the newest backup in `/backups/`
-- restores the original `[heater_generic ...]` sections from backup
-- removes `heater_slow.py` from Klipper's extras directory
-- restarts Klipper
-
-Running uninstall again is also safe as long as a backup file still exists.
+Accepts the same `--no-restart` flag and environment overrides as `install.sh`.
 
 ## Moonraker Update Manager
 
-`install.sh` automatically adds a `[update_manager slowheaters]` block to your Moonraker config so you can update `slowheaters` directly from Mainsail or Fluidd without running `git pull` manuall[...]
-
-The block is written between marker comments:
+After install, `moonraker.conf` will contain:
 
 ```ini
 # >>> slowheaters update-manager >>>
@@ -215,69 +92,43 @@ install_script: install.sh
 # <<< slowheaters update-manager <<<
 ```
 
-The install is **idempotent** — re-running `install.sh` will not duplicate the entry.
+This lets you update `heater_slow` directly from Mainsail or Fluidd without running `git pull` manually.
 
-`uninstall.sh` removes exactly this block and leaves all other Moonraker config entries untouched.
+## Configure
 
-**Default Moonraker config path:** `~/printer_data/config/moonraker.conf`
+Use a normal Klipper heater config block, but change the section type from `[heater_generic <name>]` to `[heater_slow <name>]`.
 
-To override the path set the `MOONRAKER_CONF` environment variable before running either script:
+All standard Klipper heater options (`heater_pin`, `sensor_type`, `min_temp`, `max_temp`, `control`, PID settings, `max_power`, etc.) work exactly as normal.
 
-```bash
-MOONRAKER_CONF=/path/to/moonraker.conf bash install.sh
+The only custom option this extra adds is:
+
+- `max_duration` *(optional, default: `10.0`)* — MCU PWM watchdog window in seconds. Increase this if your sensor reports less frequently than the default Klipper watchdog allows.
+
+### Example
+
+```ini
+[heater_slow my_dryer]
+heater_pin: PB1
+sensor_type: AHT20
+sensor_pin: PA0
+min_temp: 0
+max_temp: 70
+control: pid
+pid_kp: 12.0
+pid_ki: 0.5
+pid_kd: 45.0
+# max_duration is optional; default is 10.0 seconds
+max_duration: 10.0
 ```
 
-If the file does not exist at the configured path the block is silently skipped.
+See `heater_slow_simple_example.cfg` for a ready-to-paste example.
 
-## Update
-
-```bash
-cd ~/slowheaters
-git pull
-bash install.sh
-```
-
-## Manual validation
-
-Validate the Klipper extra syntax:
+## Validation
 
 ```bash
 python3 -m py_compile extras/heater_slow.py
 ```
 
-Validate the shell scripts:
+## License
 
-```bash
-bash -n install.sh uninstall.sh
-```
-
-Run regression tests for slow-heater control semantics:
-
-```bash
-python3 -m unittest discover -s tests
-```
-
-Recommended functional test:
-
-1. Start with one or more `[heater_generic ...]` sections tied to slow-reporting sensors.
-2. Run `bash install.sh --discover` and review confidence/reasons.
-3. Run `bash install.sh --interactive --all` (or `bash install.sh` for high-confidence-only apply).
-4. Confirm converted sections became `[heater_slow ...]` and that a backup file was created in `backups/`.
-5. Run `bash uninstall.sh`.
-6. Confirm the original `[heater_generic ...]` sections were restored.
-
-## Notes
-
-- Keep your normal `verify_heater`, `heater_fan`, and sensor sections unchanged.
-- The extra exposes `requested_power`, `refreshed_power`, `sensor_age`, `refresh_time`, `max_mcu_duration`, and `sensor_timeout` in status output for debugging.
-- This project is intended for experimentally validating slow-response heater setups. Test attended and conservatively first.
-
-## License and acknowledgements
-
-This project is licensed under GPL-3.0-or-later. See `/LICENSE`.
-
-Thanks to:
-
-- [Klipper](https://www.klipper3d.org/) for the host and heater framework this extra builds on
-- [AFC-Klipper-Add-On](https://github.com/ArmoredTurtle/AFC-Klipper-Add-On) for the surrounding ecosystem that helped motivate this workflow
-- the `lameandboard/rfid` project for the installer structure this repository now follows
+GPL-3.0-or-later. See `LICENSE`.

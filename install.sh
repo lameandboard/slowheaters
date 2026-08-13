@@ -281,18 +281,11 @@ SENSOR_REFERENCE_KEYS = (
     "sensor_section",
 )
 SLOW_HEATER_OPTION_KEYS = {
-    "refresh_time",
-    "max_mcu_duration",
-    "sensor_timeout",
-    "schedule_lead_time",
+    "max_duration",
 }
 
-defaults = [
-    ("refresh_time", "1.0"),
-    ("max_mcu_duration", "3.0"),
-    ("sensor_timeout", "15.0"),
-    ("schedule_lead_time", "0.100"),
-]
+# No defaults are injected; max_duration is optional (default 10.0 in the plugin).
+defaults = []
 
 CONFIDENCE_LEVEL = {"none": 0, "low": 1, "medium": 2, "high": 3}
 CONFIDENCE_FROM_LEVEL = {value: key for key, value in CONFIDENCE_LEVEL.items()}
