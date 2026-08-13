@@ -284,9 +284,8 @@ SLOW_HEATER_OPTION_KEYS = {
     "max_duration",
 }
 
-defaults = [
-    ("max_duration", "10.0"),
-]
+# No defaults are injected; max_duration is optional (default 10.0 in the plugin).
+defaults = []
 
 CONFIDENCE_LEVEL = {"none": 0, "low": 1, "medium": 2, "high": 3}
 CONFIDENCE_FROM_LEVEL = {value: key for key, value in CONFIDENCE_LEVEL.items()}
@@ -471,7 +470,7 @@ for section in all_sections:
 candidate_heaters: list[dict[str, object]] = []
 for section in all_sections:
     kind = str(section["kind"])
-    if kind not in {"heater_generic", "heater_slow"}:
+    if kind not in {"heater_generic", "slow_heater", "heater_slow"}:
         continue
 
     name = str(section["name"])
@@ -620,7 +619,7 @@ for heater in candidate_heaters:
     end = int(heater["end"])
 
     should_update = False
-    if kind == "heater_slow":
+    if kind in ("heater_slow", "slow_heater"):
         should_update = True
     elif kind == "heater_generic" and int(heater["confidence_level"]) >= threshold:
         should_update = True
@@ -630,7 +629,7 @@ for heater in candidate_heaters:
 
     original, replacement, changed, added_count = section_output(lines, start, end, kind, name)
 
-    if kind == "heater_generic":
+    if kind in ("heater_generic", "slow_heater"):
         converted.append((name, path, kind))
         backup_sections.append(
             {
@@ -660,19 +659,11 @@ for path, replacements in per_file.items():
     path.write_text("".join(lines), encoding="utf-8")
 
 
-# -------------------------------------------------------------------------
-# GUARANTEED heater_slow defaults pass
-#
-# Do not rely on discovery/conversion bookkeeping for required plugin
-# settings. Re-read every config file after all header conversions and make
-# sure every [heater_slow ...] section contains max_duration.
-# -------------------------------------------------------------------------
-guaranteed_defaults_added = 0
-
+# Guarantee every [heater_slow ...] section has max_duration.
 for config_path in config_paths:
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
     sections = parse_sections(lines)
-    inserts: list[tuple[int, str]] = []
+    inserts = []
 
     for section in sections:
         header = str(section["header"])
@@ -685,63 +676,56 @@ for config_path in config_paths:
         end_idx = int(section["end"])
         options = parse_options(lines, start_idx, end_idx)
 
-        if "max_duration" in options:
-            continue
+        if "max_duration" not in options:
+            insertion = "max_duration: 10.0\n"
 
-        # Insert immediately before the next section. Add a blank line first
-        # only when the previous line is nonblank.
-        insertion = "max_duration: 10.0\n"
-        if end_idx > start_idx + 1 and lines[end_idx - 1].strip():
-            insertion = "\n" + insertion
+            if end_idx > start_idx + 1 and lines[end_idx - 1].strip():
+                insertion = "\n" + insertion
 
-        inserts.append((end_idx, insertion))
+            inserts.append((end_idx, insertion))
+            print(
+                f"[INFO] Adding max_duration: 10.0 to "
+                f"[heater_slow {name}] in {config_path}"
+            )
 
-    # Reverse order preserves all earlier line indexes.
     for insert_at, insertion in sorted(inserts, reverse=True):
         lines[insert_at:insert_at] = [insertion]
-        guaranteed_defaults_added += 1
 
     if inserts:
         config_path.write_text("".join(lines), encoding="utf-8")
-        print(
-            f"[INFO] Guaranteed max_duration for {len(inserts)} "
-            f"heater_slow section(s) in {config_path}"
-        )
 
-# Hard verification: installation must fail if any heater_slow section is
-# still missing max_duration after the guaranteed pass.
-missing_max_duration: list[str] = []
+# Verify it actually worked.
+missing = []
 
 for config_path in config_paths:
     lines = config_path.read_text(encoding="utf-8").splitlines(keepends=True)
+
     for section in parse_sections(lines):
         header = str(section["header"])
         kind, name = split_header(header)
+
         if kind != "heater_slow":
             continue
 
         options = parse_options(
-            lines, int(section["start"]), int(section["end"])
+            lines,
+            int(section["start"]),
+            int(section["end"])
         )
-        if "max_duration" not in options:
-            missing_max_duration.append(f"{config_path}: [{header}]")
 
-if missing_max_duration:
-    print("[ERROR] The following heater_slow sections are missing max_duration:")
-    for item in missing_max_duration:
+        if "max_duration" not in options:
+            missing.append(f"{config_path}: [{header}]")
+
+if missing:
+    print("[ERROR] heater_slow sections still missing max_duration:")
+    for item in missing:
         print(f"[ERROR]   {item}")
     raise SystemExit(1)
-
-if guaranteed_defaults_added:
-    print(
-        f"[INFO] Guaranteed pass added max_duration: 10.0 to "
-        f"{guaranteed_defaults_added} heater_slow section(s)"
-    )
 
 backup_path = None
 if backup_sections:
     backups_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backups_dir / f"heater_slow_sections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    backup_path = backups_dir / f"heater_slow_sections_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
     backup_path.write_text(
         json.dumps(
             {
@@ -785,21 +769,37 @@ fi
 
 if [[ "${INTERACTIVE_MODE}" -eq 1 ]]; then
     info "Running discovery scan with all candidates"
+    # In interactive mode, always show all candidates regardless of confidence threshold
     run_config_scan discover "all" full
+    
+    # Prompt user to choose confidence level
     printf '\n[INFO] Which candidates would you like to convert?\n'
     printf '[INFO]   1) High-confidence only (sensor type match)\n'
     printf '[INFO]   2) All discovered (includes heuristic matches)\n'
     printf '[INFO]   3) Cancel (no changes)\n'
     read -r -p "[INFO] Choose [1-3]: " choice
+    
     case "${choice}" in
-        1) info "User selected: high-confidence conversions"; APPLY_POLICY="high" ;;
-        2) info "User selected: all discovered conversions"; APPLY_POLICY="all" ;;
-        *) info "User cancelled; exiting with no changes"; exit 0 ;;
+        1)
+            info "User selected: high-confidence conversions"
+            APPLY_POLICY="high"
+            ;;
+        2)
+            info "User selected: all discovered conversions"
+            APPLY_POLICY="all"
+            ;;
+        *)
+            info "User cancelled; exiting with no changes"
+            exit 0
+            ;;
     esac
 else
+    # Non-interactive: run a discovery scan first so we can report results and
+    # abort early if there is nothing eligible to install.
     info "Running pre-install discovery scan"
     scan_output=$(run_config_scan discover "${APPLY_POLICY}" full)
     printf '%s\n' "${scan_output}"
+
     if printf '%s\n' "${scan_output}" | grep -q "eligible_conversions=0 existing_slow=0"; then
         warn "No eligible heater_slow conversions were found under the current apply policy."
         warn "The heater_slow module has NOT been installed and Klipper has not been restarted."
