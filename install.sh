@@ -284,7 +284,9 @@ SLOW_HEATER_OPTION_KEYS = {
     "max_duration",
 }
 
-defaults = []
+defaults = [
+    ("max_duration", "10.0"),
+]
 
 CONFIDENCE_LEVEL = {"none": 0, "low": 1, "medium": 2, "high": 3}
 CONFIDENCE_FROM_LEVEL = {value: key for key, value in CONFIDENCE_LEVEL.items()}
@@ -420,7 +422,7 @@ def section_output(lines: list[str], start: int, end: int, kind: str, name: str)
         for line in body
         if (match := option_re.match(line))
     }
-    additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys]
+    additions = [f"{key}: {value}\n" for key, value in defaults if key not in original_keys] if kind == "heater_generic" else []
 
     changed = False
     new_lines = [f"[heater_slow {name}]\n"] + body
@@ -469,7 +471,7 @@ for section in all_sections:
 candidate_heaters: list[dict[str, object]] = []
 for section in all_sections:
     kind = str(section["kind"])
-    if kind not in {"heater_generic", "slow_heater", "heater_slow"}:
+    if kind not in {"heater_generic", "heater_slow"}:
         continue
 
     name = str(section["name"])
@@ -618,7 +620,7 @@ for heater in candidate_heaters:
     end = int(heater["end"])
 
     should_update = False
-    if kind in ("heater_slow", "slow_heater"):
+    if kind == "heater_slow":
         should_update = True
     elif kind == "heater_generic" and int(heater["confidence_level"]) >= threshold:
         should_update = True
@@ -628,7 +630,7 @@ for heater in candidate_heaters:
 
     original, replacement, changed, added_count = section_output(lines, start, end, kind, name)
 
-    if kind in ("heater_generic", "slow_heater"):
+    if kind == "heater_generic":
         converted.append((name, path, kind))
         backup_sections.append(
             {
