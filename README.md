@@ -23,23 +23,41 @@ Clone the repository and run the install script:
 cd ~
 git clone https://github.com/lameandboard/slowheaters.git slowheaters
 cd slowheaters
-bash install.sh
+bash install.sh --interactive
 ```
 
-The script copies `heater_slow.py` into `~/klipper/klippy/extras/` and restarts Klipper.
+The installer will:
+1. Scan your full Klipper config tree for slow-sensor heater candidates
+2. Show a discovery report with confidence and reasons
+3. Prompt you before converting any `[heater_generic X]` sections to `[heater_slow X]`
+4. Back up converted sections to `backups/`
+5. Copy `heater_slow.py` into `klippy/extras/`
+6. Add a `[update_manager slowheaters]` block to `moonraker.conf`
+7. Restart Klipper
 
-**Options:**
+**Common options:**
 
 ```bash
-# Skip the Klipper restart (restart manually afterwards)
+# Report-only scan — no changes, no restart
+bash install.sh --discover
+
+# Show report and prompt before applying (recommended first run)
+bash install.sh --interactive
+
+# Apply all discovered candidates non-interactively
+bash install.sh --all
+
+# Skip Klipper restart
 bash install.sh --no-restart
 ```
 
 **Environment overrides:**
 
 ```bash
+KLIPPER_CONFIG=~/printer_data/config/printer.cfg \
 KLIPPER_EXTRAS_DIR=~/klipper/klippy/extras \
 KLIPPER_SERVICE=klipper \
+MOONRAKER_CONF=~/printer_data/config/moonraker.conf \
 bash install.sh
 ```
 
@@ -50,8 +68,31 @@ cd ~/slowheaters
 bash uninstall.sh
 ```
 
-Removes `heater_slow.py` from the Klipper extras directory and restarts Klipper.
+The uninstall script:
+- Restores the original `[heater_generic X]` sections from the most recent backup
+- Removes `heater_slow.py` from Klipper extras
+- Removes the `[update_manager slowheaters]` block from `moonraker.conf`
+- Restarts Klipper
+
 Accepts the same `--no-restart` flag and environment overrides as `install.sh`.
+
+## Moonraker Update Manager
+
+After install, `moonraker.conf` will contain:
+
+```ini
+# >>> slowheaters update-manager >>>
+[update_manager slowheaters]
+type: git_repo
+path: ~/slowheaters
+origin: https://github.com/lameandboard/slowheaters.git
+primary_branch: main
+managed_services: klipper
+install_script: install.sh
+# <<< slowheaters update-manager <<<
+```
+
+This lets you update `heater_slow` directly from Mainsail or Fluidd without running `git pull` manually.
 
 ## Configure
 
