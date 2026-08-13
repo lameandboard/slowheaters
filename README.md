@@ -129,6 +129,15 @@ See `heater_slow_simple_example.cfg` for a ready-to-paste example.
 python3 -m py_compile extras/heater_slow.py
 ```
 
-## License
+## License and Acknowledgments
 
-GPL-3.0-or-later. See `LICENSE`.
+This project is licensed under **GPL-3.0-or-later**. See `/LICENSE`.
+
+`extras/heater_slow.py` inherits from Klipper's `heaters.Heater` class, so this project is a **derived GPL work** and must remain distributed under GPL-compatible terms.
+
+### Attribution
+
+- [Klipper](https://www.klipper3d.org/) — core host firmware framework and the GPL v3 `heaters.Heater` base class this project builds on
+- [AFC-Klipper-Add-On](https://github.com/ArmoredTurtle/AFC-Klipper-Add-On) — ecosystem inspiration
+- [lameandboard/rfid](https://github.com/lameandboard/rfid) — installer and restart-flow patterns
+- BTT (BigTreeTech) — Vivid temperature sensor hardware support target
